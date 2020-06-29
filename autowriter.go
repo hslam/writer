@@ -25,7 +25,7 @@ type AutoWriter struct {
 	done        chan struct{}
 }
 type Concurrency interface {
-	Concurrency() int
+	NumConcurrency() int
 }
 
 func NewAutoWriter(Conn io.Writer, noDelay bool, maxBytes int, alpha int, concurrency Concurrency) io.WriteCloser {
@@ -51,10 +51,10 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 	if w.noDelay {
 		return w.conn.Write(p)
 	}
-	concurrency := w.concurrency.Concurrency()
+	concurrency := w.concurrency.NumConcurrency()
 	length := len(p)
 	w.mu.Lock()
-	if concurrency < numCPU*w.alpha+1 || w.count > concurrency/2 || w.size+length > w.maxBytes {
+	if concurrency < numCPU*w.alpha || w.count > concurrency/2 || w.size+length > w.maxBytes {
 		if w.size > 0 && w.size+length < w.maxBytes {
 			copy(w.buffer[w.size:], p)
 			w.size += length
@@ -94,12 +94,12 @@ func (w *AutoWriter) run() {
 			w.count = 0
 		}
 		w.mu.Unlock()
-		s := time.Duration((float64(numCPU*w.alpha-w.concurrency.Concurrency()) * 256 / float64(numCPU*w.alpha)))
-		if s < 4 {
-			s = 4
+		s := time.Duration((float64(numCPU*w.alpha-w.concurrency.NumConcurrency()) * 256 / float64(numCPU*w.alpha)))
+		if s < 3 {
+			s = 3
 		}
 		select {
-		case <-time.After(time.Microsecond * s * s * 8):
+		case <-time.After(time.Microsecond * s * s * 16):
 		case <-w.trigger:
 			atomic.AddInt64(&w.triggerCnt, -1)
 		case <-w.done:
