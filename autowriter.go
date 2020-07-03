@@ -109,6 +109,9 @@ func (w *AutoWriter) run() {
 }
 
 func (w *AutoWriter) Close() error {
+	if !w.noDelay && w.trigger != nil {
+		close(w.trigger)
+	}
 	if !w.noDelay && w.done != nil {
 		close(w.done)
 	}
