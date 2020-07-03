@@ -21,8 +21,8 @@ type AutoWriter struct {
 	concurrency Concurrency
 	alpha       int
 	triggerCnt  int64
-	trigger     chan struct{}
-	done        chan struct{}
+	trigger     chan bool
+	done        chan bool
 }
 type Concurrency interface {
 	NumConcurrency() int
@@ -41,8 +41,8 @@ func NewAutoWriter(Conn io.Writer, noDelay bool, maxBytes int, alpha int, concur
 		w.maxBytes = maxBytes
 		w.buffer = make([]byte, maxBytes)
 		w.concurrency = concurrency
-		w.trigger = make(chan struct{}, numCPU*w.alpha*4)
-		w.done = make(chan struct{}, 1)
+		w.trigger = make(chan bool, numCPU*w.alpha*4)
+		w.done = make(chan bool, 1)
 		go w.run()
 	}
 	return w
@@ -77,7 +77,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 		w.size += length
 		w.count += 1
 		if w.count > concurrency/2 && atomic.LoadInt64(&w.triggerCnt) < 1 {
-			w.trigger <- struct{}{}
+			w.trigger <- true
 			atomic.AddInt64(&w.triggerCnt, 1)
 		}
 	}
