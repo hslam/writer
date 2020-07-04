@@ -54,7 +54,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 	concurrency := w.concurrency.NumConcurrency()
 	length := len(p)
 	w.mu.Lock()
-	if concurrency < numCPU*w.alpha || w.count > concurrency/2 || w.size+length > w.maxBytes {
+	if concurrency < 8 || w.count > concurrency/2 || w.size+length > w.maxBytes {
 		if w.size > 0 && w.size+length < w.maxBytes {
 			copy(w.buffer[w.size:], p)
 			w.size += length
