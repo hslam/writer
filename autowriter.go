@@ -77,7 +77,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 		if length > 0 {
 			w.conn.Write(p)
 		}
-	} else if concurrency <= 4 || w.writeCnt < 4 {
+	} else if concurrency <= w.thresh {
 		if w.size > 0 {
 			copy(w.buffer[w.size:], p)
 			w.size += length
@@ -89,16 +89,69 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 			w.size = 0
 			w.count = 0
 		}
-	} else {
-		copy(w.buffer[w.size:], p)
-		w.size += length
-		w.count += 1
-		if w.count > concurrency-4 {
-			w.conn.Write(w.buffer[:w.size])
-			w.size = 0
-			w.count = 0
-			w.writeCnt = 0
+	} else if concurrency <= w.thresh*w.thresh {
+		if w.writeCnt < w.thresh {
+			if w.size > 0 {
+				copy(w.buffer[w.size:], p)
+				w.size += length
+				w.conn.Write(w.buffer[:w.size])
+				w.size = 0
+				w.count = 0
+			} else {
+				w.conn.Write(p)
+				w.size = 0
+				w.count = 0
+			}
+		} else {
+			copy(w.buffer[w.size:], p)
+			w.size += length
+			w.count += 1
+			if w.count > concurrency-w.thresh {
+				w.conn.Write(w.buffer[:w.size])
+				w.size = 0
+				w.count = 0
+				w.writeCnt = 0
+			}
 		}
+
+	} else {
+		alpha := w.thresh*2 - (concurrency-1)/w.thresh
+		if alpha > 1 {
+			if w.writeCnt < alpha {
+				if w.size > 0 {
+					copy(w.buffer[w.size:], p)
+					w.size += length
+					w.conn.Write(w.buffer[:w.size])
+					w.size = 0
+					w.count = 0
+				} else {
+					w.conn.Write(p)
+					w.size = 0
+					w.count = 0
+				}
+			} else {
+				copy(w.buffer[w.size:], p)
+				w.size += length
+				w.count += 1
+				if w.count > concurrency-alpha {
+					w.conn.Write(w.buffer[:w.size])
+					w.size = 0
+					w.count = 0
+					w.writeCnt = 0
+				}
+			}
+		} else {
+			copy(w.buffer[w.size:], p)
+			w.size += length
+			w.count += 1
+			if w.count > concurrency-1 {
+				w.conn.Write(w.buffer[:w.size])
+				w.size = 0
+				w.count = 0
+				w.writeCnt = 0
+			}
+		}
+
 	}
 	w.mu.Unlock()
 	return len(p), nil
