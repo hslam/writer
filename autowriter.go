@@ -4,26 +4,30 @@ import (
 	"io"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 var numCPU = runtime.NumCPU()
 
-const maxSize = 4
+const maximumSegmentSize = 65536
+const lastsSize = 4
 
 type AutoWriter struct {
 	mu          *sync.Mutex
 	conn        io.Writer
 	noDelay     bool
-	maxBytes    int
+	mss         int
 	buffer      []byte
 	size        int
 	count       int
 	writeCnt    int
 	concurrency Concurrency
 	thresh      int
-	lasts       [maxSize]int
+	lasts       [lastsSize]int
 	cursor      int
+	triggerCnt  int64
+	trigger     chan bool
 	done        chan bool
 }
 type Concurrency interface {
@@ -32,17 +36,19 @@ type Concurrency interface {
 
 func NewAutoWriter(Conn io.Writer, noDelay bool, maxBytes int, thresh int, concurrency Concurrency) io.WriteCloser {
 	if maxBytes < 1 {
-		maxBytes = 65536 //65536
+		maxBytes = maximumSegmentSize
 	}
 	if thresh < 2 {
 		thresh = 2
 	}
-	w := &AutoWriter{conn: Conn, noDelay: noDelay, thresh: thresh}
+	w := &AutoWriter{conn: Conn, noDelay: noDelay}
 	if !noDelay {
 		w.mu = &sync.Mutex{}
-		w.maxBytes = maxBytes
+		w.thresh = thresh
+		w.mss = maxBytes
 		w.buffer = make([]byte, maxBytes)
 		w.concurrency = concurrency
+		w.trigger = make(chan bool, thresh*thresh*4)
 		w.done = make(chan bool, 1)
 		go w.run()
 	}
@@ -51,9 +57,9 @@ func NewAutoWriter(Conn io.Writer, noDelay bool, maxBytes int, thresh int, concu
 func (w *AutoWriter) numConcurrency() (n int) {
 	concurrency := w.concurrency.NumConcurrency()
 	w.cursor += 1
-	w.lasts[w.cursor%maxSize] = concurrency
+	w.lasts[w.cursor%lastsSize] = concurrency
 	var max int
-	for i := 0; i < maxSize; i++ {
+	for i := 0; i < lastsSize; i++ {
 		if w.lasts[i] > max {
 			max = w.lasts[i]
 		}
@@ -68,7 +74,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 	length := len(p)
 	w.mu.Lock()
 	w.writeCnt += 1
-	if w.size+length > w.maxBytes {
+	if w.size+length > w.mss {
 		if w.size > 0 {
 			w.conn.Write(w.buffer[:w.size])
 			w.size = 0
@@ -111,6 +117,9 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				w.size = 0
 				w.count = 0
 				w.writeCnt = 0
+			} else if atomic.LoadInt64(&w.triggerCnt) < 1 {
+				w.trigger <- true
+				atomic.AddInt64(&w.triggerCnt, 1)
 			}
 		}
 
@@ -138,6 +147,9 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 					w.size = 0
 					w.count = 0
 					w.writeCnt = 0
+				} else if atomic.LoadInt64(&w.triggerCnt) < 1 {
+					w.trigger <- true
+					atomic.AddInt64(&w.triggerCnt, 1)
 				}
 			}
 		} else {
@@ -149,9 +161,11 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				w.size = 0
 				w.count = 0
 				w.writeCnt = 0
+			} else if atomic.LoadInt64(&w.triggerCnt) < 1 {
+				w.trigger <- true
+				atomic.AddInt64(&w.triggerCnt, 1)
 			}
 		}
-
 	}
 	w.mu.Unlock()
 	return len(p), nil
@@ -166,15 +180,19 @@ func (w *AutoWriter) run() {
 			w.count = 0
 		}
 		w.mu.Unlock()
-		//s := time.Duration((float64(numCPU*w.alpha-w.concurrency.NumConcurrency()) * 256 / float64(numCPU*w.alpha)))
-		//if s < 3 {
-		//	s = 3
-		//}
-		time.Sleep(time.Microsecond * 100)
+		var d time.Duration
+		if w.concurrency.NumConcurrency() < w.thresh*2 {
+			d = time.Second
+		} else {
+			d = time.Microsecond * 100
+		}
 		select {
+		case <-time.After(d):
+		case <-w.trigger:
+			atomic.AddInt64(&w.triggerCnt, -1)
+			time.Sleep(time.Microsecond * 10)
 		case <-w.done:
 			return
-		default:
 		}
 	}
 }
@@ -182,6 +200,9 @@ func (w *AutoWriter) run() {
 func (w *AutoWriter) Close() error {
 	if !w.noDelay && w.done != nil {
 		close(w.done)
+	}
+	if !w.noDelay && w.trigger != nil {
+		close(w.trigger)
 	}
 	return nil
 }
