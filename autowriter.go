@@ -178,6 +178,7 @@ func (w *AutoWriter) run() {
 			w.conn.Write(w.buffer[:w.size])
 			w.size = 0
 			w.count = 0
+			w.writeCnt = 0
 		}
 		w.mu.Unlock()
 		var d time.Duration
@@ -189,8 +190,8 @@ func (w *AutoWriter) run() {
 		select {
 		case <-time.After(d):
 		case <-w.trigger:
+			time.Sleep(time.Microsecond * 5)
 			atomic.AddInt64(&w.triggerCnt, -1)
-			time.Sleep(time.Microsecond * 10)
 		case <-w.done:
 			return
 		}
