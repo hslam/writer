@@ -55,6 +55,9 @@ func NewAutoWriter(Conn io.Writer, noDelay bool, maxBytes int, thresh int, concu
 	return w
 }
 func (w *AutoWriter) numConcurrency() (n int) {
+	if w.concurrency == nil {
+		return 1
+	}
 	concurrency := w.concurrency.NumConcurrency()
 	w.cursor += 1
 	w.lasts[w.cursor%lastsSize] = concurrency
