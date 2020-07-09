@@ -182,7 +182,7 @@ func (w *AutoWriter) run() {
 		}
 		w.mu.Unlock()
 		var d time.Duration
-		if w.concurrency.NumConcurrency() < w.thresh*2 {
+		if w.numConcurrency() < w.thresh*2 {
 			d = time.Second
 		} else {
 			d = time.Microsecond * 100
@@ -190,7 +190,7 @@ func (w *AutoWriter) run() {
 		select {
 		case <-time.After(d):
 		case <-w.trigger:
-			time.Sleep(time.Microsecond * 5)
+			time.Sleep(time.Microsecond * time.Duration(w.numConcurrency()))
 			atomic.AddInt64(&w.triggerCnt, -1)
 		case <-w.done:
 			return
