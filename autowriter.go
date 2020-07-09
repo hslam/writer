@@ -42,7 +42,7 @@ func NewAutoWriter(Conn io.Writer, noDelay bool, maxBytes int, thresh int, concu
 		thresh = 2
 	}
 	w := &AutoWriter{conn: Conn, noDelay: noDelay}
-	if !noDelay {
+	if !noDelay && concurrency != nil {
 		w.mu = &sync.Mutex{}
 		w.thresh = thresh
 		w.mss = maxBytes
@@ -55,9 +55,6 @@ func NewAutoWriter(Conn io.Writer, noDelay bool, maxBytes int, thresh int, concu
 	return w
 }
 func (w *AutoWriter) numConcurrency() (n int) {
-	if w.concurrency == nil {
-		return 1
-	}
 	concurrency := w.concurrency.NumConcurrency()
 	w.cursor += 1
 	w.lasts[w.cursor%lastsSize] = concurrency
@@ -70,7 +67,7 @@ func (w *AutoWriter) numConcurrency() (n int) {
 	return max
 }
 func (w *AutoWriter) Write(p []byte) (n int, err error) {
-	if w.noDelay {
+	if w.noDelay || w.concurrency == nil {
 		return w.conn.Write(p)
 	}
 	concurrency := w.numConcurrency()
