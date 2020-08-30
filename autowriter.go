@@ -11,22 +11,21 @@ const maximumSegmentSize = 65536
 const lastsSize = 4
 
 type AutoWriter struct {
-	mu         *sync.Mutex
-	writer     io.Writer
-	noDelay    bool
-	mss        int
-	buffer     []byte
-	size       int
-	count      int
-	writeCnt   int
-	batch      Batch
-	thresh     int
-	lasts      [lastsSize]int
-	cursor     int
-	triggerCnt int64
-	trigger    chan bool
-	done       chan bool
-	closed     int32
+	mu       *sync.Mutex
+	writer   io.Writer
+	noDelay  bool
+	mss      int
+	buffer   []byte
+	size     int
+	count    int
+	writeCnt int
+	batch    Batch
+	thresh   int
+	lasts    [lastsSize]int
+	cursor   int
+	trigger  chan struct{}
+	done     chan struct{}
+	closed   int32
 }
 type Batch interface {
 	Concurrency() int
@@ -46,8 +45,8 @@ func NewAutoWriter(writer io.Writer, noDelay bool, maxBytes int, thresh int, bat
 		w.mss = maxBytes
 		w.buffer = make([]byte, maxBytes)
 		w.batch = batch
-		w.trigger = make(chan bool, thresh*thresh*4)
-		w.done = make(chan bool, 1)
+		w.trigger = make(chan struct{}, 10)
+		w.done = make(chan struct{}, 1)
 		go w.run()
 	}
 	return w
@@ -70,6 +69,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 	concurrency := w.concurrency()
 	length := len(p)
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.writeCnt += 1
 	if w.size+length > w.mss {
 		if w.size > 0 {
@@ -114,9 +114,10 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				w.size = 0
 				w.count = 0
 				w.writeCnt = 0
-			} else if atomic.LoadInt64(&w.triggerCnt) < 1 {
-				w.trigger <- true
-				atomic.AddInt64(&w.triggerCnt, 1)
+			}
+			select {
+			case w.trigger <- struct{}{}:
+			default:
 			}
 		}
 	} else {
@@ -143,9 +144,10 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 					w.size = 0
 					w.count = 0
 					w.writeCnt = 0
-				} else if atomic.LoadInt64(&w.triggerCnt) < 1 {
-					w.trigger <- true
-					atomic.AddInt64(&w.triggerCnt, 1)
+				}
+				select {
+				case w.trigger <- struct{}{}:
+				default:
 				}
 			}
 		} else {
@@ -157,13 +159,13 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				w.size = 0
 				w.count = 0
 				w.writeCnt = 0
-			} else if atomic.LoadInt64(&w.triggerCnt) < 1 {
-				w.trigger <- true
-				atomic.AddInt64(&w.triggerCnt, 1)
+			}
+			select {
+			case w.trigger <- struct{}{}:
+			default:
 			}
 		}
 	}
-	w.mu.Unlock()
 	return len(p), nil
 }
 
@@ -187,7 +189,6 @@ func (w *AutoWriter) run() {
 		case <-time.After(d):
 		case <-w.trigger:
 			time.Sleep(time.Microsecond * time.Duration(w.concurrency()))
-			atomic.AddInt64(&w.triggerCnt, -1)
 		case <-w.done:
 			return
 		}
