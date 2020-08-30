@@ -26,6 +26,7 @@ type AutoWriter struct {
 	triggerCnt int64
 	trigger    chan bool
 	done       chan bool
+	closed     int32
 }
 type Batch interface {
 	Concurrency() int
@@ -118,7 +119,6 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				atomic.AddInt64(&w.triggerCnt, 1)
 			}
 		}
-
 	} else {
 		alpha := w.thresh*2 - (concurrency-1)/w.thresh
 		if alpha > 1 {
@@ -195,6 +195,9 @@ func (w *AutoWriter) run() {
 }
 
 func (w *AutoWriter) Close() error {
+	if !atomic.CompareAndSwapInt32(&w.closed, 0, 1) {
+		return nil
+	}
 	if !w.noDelay && w.done != nil {
 		close(w.done)
 	}
