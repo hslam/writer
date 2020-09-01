@@ -27,6 +27,7 @@ type AutoWriter struct {
 	done     chan struct{}
 	closed   int32
 }
+
 type Batch interface {
 	Concurrency() int
 }
@@ -51,6 +52,7 @@ func NewAutoWriter(writer io.Writer, noDelay bool, maxBytes int, thresh int, bat
 	}
 	return w
 }
+
 func (w *AutoWriter) concurrency() (n int) {
 	w.cursor += 1
 	w.lasts[w.cursor%lastsSize] = w.batch.Concurrency()
@@ -62,6 +64,7 @@ func (w *AutoWriter) concurrency() (n int) {
 	}
 	return max
 }
+
 func (w *AutoWriter) Write(p []byte) (n int, err error) {
 	if w.noDelay || w.batch == nil {
 		return w.writer.Write(p)
@@ -196,6 +199,14 @@ func (w *AutoWriter) run() {
 }
 
 func (w *AutoWriter) Close() error {
+	w.mu.Lock()
+	if w.size > 0 {
+		w.writer.Write(w.buffer[:w.size])
+		w.size = 0
+		w.count = 0
+		w.writeCnt = 0
+	}
+	w.mu.Unlock()
 	if !atomic.CompareAndSwapInt32(&w.closed, 0, 1) {
 		return nil
 	}
