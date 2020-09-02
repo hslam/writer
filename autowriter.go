@@ -11,28 +11,24 @@ const maximumSegmentSize = 65536
 const lastsSize = 4
 
 type AutoWriter struct {
-	mu       *sync.Mutex
-	writer   io.Writer
-	noDelay  bool
-	mss      int
-	buffer   []byte
-	size     int
-	count    int
-	writeCnt int
-	batch    Batch
-	thresh   int
-	lasts    [lastsSize]int
-	cursor   int
-	trigger  chan struct{}
-	done     chan struct{}
-	closed   int32
+	mu          *sync.Mutex
+	writer      io.Writer
+	noDelay     bool
+	mss         int
+	buffer      []byte
+	size        int
+	count       int
+	writeCnt    int
+	concurrency func() int
+	thresh      int
+	lasts       [lastsSize]int
+	cursor      int
+	trigger     chan struct{}
+	done        chan struct{}
+	closed      int32
 }
 
-type Batch interface {
-	Concurrency() int
-}
-
-func NewAutoWriter(writer io.Writer, noDelay bool, maxBytes int, thresh int, batch Batch) io.WriteCloser {
+func NewAutoWriter(writer io.Writer, noDelay bool, maxBytes int, thresh int, concurrency func() int) io.WriteCloser {
 	if maxBytes < 1 {
 		maxBytes = maximumSegmentSize
 	}
@@ -40,12 +36,12 @@ func NewAutoWriter(writer io.Writer, noDelay bool, maxBytes int, thresh int, bat
 		thresh = 2
 	}
 	w := &AutoWriter{writer: writer, noDelay: noDelay}
-	if !noDelay && batch != nil {
+	if !noDelay && concurrency != nil {
 		w.mu = &sync.Mutex{}
 		w.thresh = thresh
 		w.mss = maxBytes
 		w.buffer = make([]byte, maxBytes)
-		w.batch = batch
+		w.concurrency = concurrency
 		w.trigger = make(chan struct{}, 10)
 		w.done = make(chan struct{}, 1)
 		go w.run()
@@ -53,9 +49,9 @@ func NewAutoWriter(writer io.Writer, noDelay bool, maxBytes int, thresh int, bat
 	return w
 }
 
-func (w *AutoWriter) concurrency() (n int) {
+func (w *AutoWriter) batch() (n int) {
 	w.cursor += 1
-	w.lasts[w.cursor%lastsSize] = w.batch.Concurrency()
+	w.lasts[w.cursor%lastsSize] = w.concurrency()
 	var max int
 	for i := 0; i < lastsSize; i++ {
 		if w.lasts[i] > max {
@@ -66,10 +62,10 @@ func (w *AutoWriter) concurrency() (n int) {
 }
 
 func (w *AutoWriter) Write(p []byte) (n int, err error) {
-	if w.noDelay || w.batch == nil {
+	if w.noDelay || w.concurrency == nil {
 		return w.writer.Write(p)
 	}
-	concurrency := w.concurrency()
+	batch := w.batch()
 	length := len(p)
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -83,7 +79,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 		if length > 0 {
 			w.writer.Write(p)
 		}
-	} else if concurrency <= w.thresh {
+	} else if batch <= w.thresh {
 		if w.size > 0 {
 			copy(w.buffer[w.size:], p)
 			w.size += length
@@ -95,7 +91,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 			w.size = 0
 			w.count = 0
 		}
-	} else if concurrency <= w.thresh*w.thresh {
+	} else if batch <= w.thresh*w.thresh {
 		if w.writeCnt < w.thresh {
 			if w.size > 0 {
 				copy(w.buffer[w.size:], p)
@@ -112,7 +108,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 			copy(w.buffer[w.size:], p)
 			w.size += length
 			w.count += 1
-			if w.count > concurrency-w.thresh {
+			if w.count > batch-w.thresh {
 				w.writer.Write(w.buffer[:w.size])
 				w.size = 0
 				w.count = 0
@@ -124,7 +120,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 			}
 		}
 	} else {
-		alpha := w.thresh*2 - (concurrency-1)/w.thresh
+		alpha := w.thresh*2 - (batch-1)/w.thresh
 		if alpha > 1 {
 			if w.writeCnt < alpha {
 				if w.size > 0 {
@@ -142,7 +138,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				copy(w.buffer[w.size:], p)
 				w.size += length
 				w.count += 1
-				if w.count > concurrency-alpha {
+				if w.count > batch-alpha {
 					w.writer.Write(w.buffer[:w.size])
 					w.size = 0
 					w.count = 0
@@ -157,7 +153,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 			copy(w.buffer[w.size:], p)
 			w.size += length
 			w.count += 1
-			if w.count > concurrency-1 {
+			if w.count > batch-1 {
 				w.writer.Write(w.buffer[:w.size])
 				w.size = 0
 				w.count = 0
@@ -183,7 +179,7 @@ func (w *AutoWriter) run() {
 		}
 		w.mu.Unlock()
 		var d time.Duration
-		if w.concurrency() < w.thresh*2 {
+		if w.batch() < w.thresh*2 {
 			d = time.Second
 		} else {
 			d = time.Microsecond * 100
@@ -191,7 +187,7 @@ func (w *AutoWriter) run() {
 		select {
 		case <-time.After(d):
 		case <-w.trigger:
-			time.Sleep(time.Microsecond * time.Duration(w.concurrency()))
+			time.Sleep(time.Microsecond * time.Duration(w.batch()))
 		case <-w.done:
 			return
 		}
