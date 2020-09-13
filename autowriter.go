@@ -25,6 +25,7 @@ func assignPool(size int) *sync.Pool {
 				return make([]byte, size)
 			}}
 			buffers.Store(size, pool)
+			atomic.StoreInt32(&assign, 0)
 			return pool
 		}
 	}
