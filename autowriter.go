@@ -10,7 +10,28 @@ import (
 const maximumSegmentSize = 65536
 const lastsSize = 4
 
+var (
+	buffers = sync.Map{}
+	assign  int32
+)
+
+func assignPool(size int) *sync.Pool {
+	for {
+		if p, ok := buffers.Load(size); ok {
+			return p.(*sync.Pool)
+		}
+		if atomic.CompareAndSwapInt32(&assign, 0, 1) {
+			var pool = &sync.Pool{New: func() interface{} {
+				return make([]byte, size)
+			}}
+			buffers.Store(size, pool)
+			return pool
+		}
+	}
+}
+
 type AutoWriter struct {
+	lowMemory   bool
 	mu          *sync.Mutex
 	writer      io.Writer
 	noDelay     bool
@@ -37,10 +58,16 @@ func NewAutoWriter(writer io.Writer, noDelay bool, maxBytes int, thresh int, con
 	}
 	w := &AutoWriter{writer: writer, noDelay: noDelay}
 	if !noDelay && concurrency != nil {
+		var lowMemory = false
+		var buffer []byte
+		if !lowMemory {
+			buffer = make([]byte, maxBytes)
+		}
+		w.lowMemory = lowMemory
 		w.mu = &sync.Mutex{}
 		w.thresh = thresh
 		w.mss = maxBytes
-		w.buffer = make([]byte, maxBytes)
+		w.buffer = buffer
 		w.concurrency = concurrency
 		w.trigger = make(chan struct{}, 10)
 		w.done = make(chan struct{}, 1)
@@ -73,6 +100,9 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 	if w.size+length > w.mss {
 		if w.size > 0 {
 			w.writer.Write(w.buffer[:w.size])
+			if w.lowMemory {
+				assignPool(w.mss).Put(w.buffer)
+			}
 			w.size = 0
 			w.count = 0
 		}
@@ -84,6 +114,9 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 			copy(w.buffer[w.size:], p)
 			w.size += length
 			w.writer.Write(w.buffer[:w.size])
+			if w.lowMemory {
+				assignPool(w.mss).Put(w.buffer)
+			}
 			w.size = 0
 			w.count = 0
 		} else {
@@ -97,6 +130,9 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				copy(w.buffer[w.size:], p)
 				w.size += length
 				w.writer.Write(w.buffer[:w.size])
+				if w.lowMemory {
+					assignPool(w.mss).Put(w.buffer)
+				}
 				w.size = 0
 				w.count = 0
 			} else {
@@ -105,11 +141,17 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				w.count = 0
 			}
 		} else {
+			if w.lowMemory && len(w.buffer) == 0 {
+				w.buffer = assignPool(w.mss).Get().([]byte)
+			}
 			copy(w.buffer[w.size:], p)
 			w.size += length
 			w.count += 1
 			if w.count > batch-w.thresh {
 				w.writer.Write(w.buffer[:w.size])
+				if w.lowMemory {
+					assignPool(w.mss).Put(w.buffer)
+				}
 				w.size = 0
 				w.count = 0
 				w.writeCnt = 0
@@ -127,6 +169,9 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 					copy(w.buffer[w.size:], p)
 					w.size += length
 					w.writer.Write(w.buffer[:w.size])
+					if w.lowMemory {
+						assignPool(w.mss).Put(w.buffer)
+					}
 					w.size = 0
 					w.count = 0
 				} else {
@@ -135,11 +180,17 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 					w.count = 0
 				}
 			} else {
+				if w.lowMemory && len(w.buffer) == 0 {
+					w.buffer = assignPool(w.mss).Get().([]byte)
+				}
 				copy(w.buffer[w.size:], p)
 				w.size += length
 				w.count += 1
 				if w.count > batch-alpha {
 					w.writer.Write(w.buffer[:w.size])
+					if w.lowMemory {
+						assignPool(w.mss).Put(w.buffer)
+					}
 					w.size = 0
 					w.count = 0
 					w.writeCnt = 0
@@ -150,11 +201,17 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				}
 			}
 		} else {
+			if w.lowMemory && len(w.buffer) == 0 {
+				w.buffer = assignPool(w.mss).Get().([]byte)
+			}
 			copy(w.buffer[w.size:], p)
 			w.size += length
 			w.count += 1
 			if w.count > batch-1 {
 				w.writer.Write(w.buffer[:w.size])
+				if w.lowMemory {
+					assignPool(w.mss).Put(w.buffer)
+				}
 				w.size = 0
 				w.count = 0
 				w.writeCnt = 0
@@ -173,6 +230,9 @@ func (w *AutoWriter) run() {
 		w.mu.Lock()
 		if w.size > 0 {
 			w.writer.Write(w.buffer[:w.size])
+			if w.lowMemory {
+				assignPool(w.mss).Put(w.buffer)
+			}
 			w.size = 0
 			w.count = 0
 			w.writeCnt = 0
@@ -198,6 +258,9 @@ func (w *AutoWriter) Close() error {
 	w.mu.Lock()
 	if w.size > 0 {
 		w.writer.Write(w.buffer[:w.size])
+		if w.lowMemory {
+			assignPool(w.mss).Put(w.buffer)
+		}
 		w.size = 0
 		w.count = 0
 		w.writeCnt = 0
@@ -212,5 +275,6 @@ func (w *AutoWriter) Close() error {
 	if !w.noDelay && w.trigger != nil {
 		close(w.trigger)
 	}
+	w.buffer = nil
 	return nil
 }
