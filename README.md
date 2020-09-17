@@ -45,7 +45,7 @@ func main() {
 }
 
 func RunParallel(num int, batch bool) {
-	start := time.Now().UnixNano()
+	start := time.Now()
 	r, w := io.Pipe()
 	size := 0
 	done := make(chan struct{})
@@ -75,7 +75,8 @@ func RunParallel(num int, batch bool) {
 	worker.w.Close()
 	w.Close()
 	<-done
-	fmt.Printf("batch - %t,\ttime - %.3fs,\tparallel - %d,\twrite - %dMByte/s\n", batch, float64(time.Now().UnixNano()-start)/1E9, num, size/1E6)
+	fmt.Printf("time - %.1fs, batch - %t,\tparallel - %d,\twrite - %dMByte/s\n",
+		float64(time.Now().Sub(start))/1E9, batch, num, size/1E6)
 }
 
 type Worker struct {
@@ -106,12 +107,12 @@ func (w *Worker) run(wg *sync.WaitGroup) {
 
 #### Output
 ```
-batch - false,	time - 1.004s,	parallel - 1,	write - 535MByte/s
-batch - false,	time - 1.002s,	parallel - 16,	write - 381MByte/s
-batch - false,	time - 1.004s,	parallel - 32,	write - 385MByte/s
-batch - true,	time - 1.002s,	parallel - 1,	write - 503MByte/s
-batch - true,	time - 1.000s,	parallel - 16,	write - 962MByte/s
-batch - true,	time - 1.000s,	parallel - 32,	write - 2075MByte/s
+time - 1.0s, batch - false,	parallel - 1,	write - 514MByte/s
+time - 1.0s, batch - false,	parallel - 16,	write - 386MByte/s
+time - 1.0s, batch - false,	parallel - 32,	write - 382MByte/s
+time - 1.0s, batch - true,	parallel - 1,	write - 498MByte/s
+time - 1.0s, batch - true,	parallel - 16,	write - 1005MByte/s
+time - 1.0s, batch - true,	parallel - 32,	write - 2006MByte/s
 ```
 
 ### License
