@@ -128,10 +128,12 @@ func TestShared(t *testing.T) {
 }
 
 func TestMMS(t *testing.T) {
+	testSize(1, t)
 	testSize(512+1, t)
 	testSize(512*4+1, t)
 	testSize(512*16+1, t)
 	testSize(512*28+1, t)
+	testSize(512*32+1, t)
 }
 
 func testSize(mms int, t *testing.T) {
