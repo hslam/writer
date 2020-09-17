@@ -197,6 +197,7 @@ func (w *Writer) flush(reset bool) (err error) {
 		_, err = w.writer.Write(w.buffer[:w.size])
 		if w.shared {
 			assignPool(w.mss).Put(w.buffer)
+			w.buffer = nil
 		}
 		w.size = 0
 		w.count = 0
@@ -233,9 +234,11 @@ func (w *Writer) run() {
 
 // Close closes the writer, but do not close the underlying io.Writer
 func (w *Writer) Close() (err error) {
-	w.mu.Lock()
-	err = w.flush(true)
-	w.mu.Unlock()
+	if w.concurrency != nil {
+		w.mu.Lock()
+		err = w.flush(true)
+		w.mu.Unlock()
+	}
 	if !atomic.CompareAndSwapInt32(&w.closed, 0, 1) {
 		return err
 	}
