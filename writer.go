@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+const thresh = 4
 const maximumSegmentSize = 65536
 const lastsSize = 4
 
@@ -67,7 +68,7 @@ func NewWriter(writer io.Writer, concurrency func() int, size int, shared bool) 
 		}
 		w.shared = shared
 		w.mu = &sync.Mutex{}
-		w.thresh = 2
+		w.thresh = thresh
 		w.mss = size
 		w.buffer = buffer
 		w.concurrency = concurrency
