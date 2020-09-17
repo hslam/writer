@@ -1,4 +1,8 @@
-package autowriter
+// Copyright (c) 2020 Meng Huang (mhboy@outlook.com)
+// This package is licensed under a MIT license that can be found in the LICENSE file.
+
+// Package writer implements batch writing for an io.Writer object with the concurrency.
+package writer
 
 import (
 	"io"
@@ -31,11 +35,11 @@ func assignPool(size int) *sync.Pool {
 	}
 }
 
-type AutoWriter struct {
-	lowMemory   bool
+// Writer implements batch writing for an io.Writer object.
+type Writer struct {
+	shared      bool
 	mu          *sync.Mutex
 	writer      io.Writer
-	noDelay     bool
 	mss         int
 	buffer      []byte
 	size        int
@@ -50,24 +54,21 @@ type AutoWriter struct {
 	closed      int32
 }
 
-func NewAutoWriter(writer io.Writer, noDelay bool, maxBytes int, thresh int, concurrency func() int) io.WriteCloser {
-	if maxBytes < 1 {
-		maxBytes = maximumSegmentSize
+// NewWriter returns a new batch Writer with the concurrency.
+func NewWriter(writer io.Writer, concurrency func() int, size int, shared bool) io.WriteCloser {
+	if size < 1 {
+		size = maximumSegmentSize
 	}
-	if thresh < 2 {
-		thresh = 2
-	}
-	w := &AutoWriter{writer: writer, noDelay: noDelay}
-	if !noDelay && concurrency != nil {
-		var lowMemory = false
+	w := &Writer{writer: writer}
+	if concurrency != nil {
 		var buffer []byte
-		if !lowMemory {
-			buffer = make([]byte, maxBytes)
+		if !shared {
+			buffer = make([]byte, size)
 		}
-		w.lowMemory = lowMemory
+		w.shared = shared
 		w.mu = &sync.Mutex{}
-		w.thresh = thresh
-		w.mss = maxBytes
+		w.thresh = 2
+		w.mss = size
 		w.buffer = buffer
 		w.concurrency = concurrency
 		w.trigger = make(chan struct{}, 10)
@@ -77,8 +78,8 @@ func NewAutoWriter(writer io.Writer, noDelay bool, maxBytes int, thresh int, con
 	return w
 }
 
-func (w *AutoWriter) batch() (n int) {
-	w.cursor += 1
+func (w *Writer) batch() (n int) {
+	w.cursor++
 	w.lasts[w.cursor%lastsSize] = w.concurrency()
 	var max int
 	for i := 0; i < lastsSize; i++ {
@@ -89,23 +90,20 @@ func (w *AutoWriter) batch() (n int) {
 	return max
 }
 
-func (w *AutoWriter) Write(p []byte) (n int, err error) {
-	if w.noDelay || w.concurrency == nil {
+// Write writes the contents of p into the buffer or the underlying io.Writer.
+// It returns the number of bytes written.
+func (w *Writer) Write(p []byte) (n int, err error) {
+	if w.concurrency == nil {
 		return w.writer.Write(p)
 	}
 	batch := w.batch()
 	length := len(p)
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.writeCnt += 1
+	w.writeCnt++
 	if w.size+length > w.mss {
 		if w.size > 0 {
-			w.writer.Write(w.buffer[:w.size])
-			if w.lowMemory {
-				assignPool(w.mss).Put(w.buffer)
-			}
-			w.size = 0
-			w.count = 0
+			w.flush(false)
 		}
 		if length > 0 {
 			w.writer.Write(p)
@@ -114,12 +112,7 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 		if w.size > 0 {
 			copy(w.buffer[w.size:], p)
 			w.size += length
-			w.writer.Write(w.buffer[:w.size])
-			if w.lowMemory {
-				assignPool(w.mss).Put(w.buffer)
-			}
-			w.size = 0
-			w.count = 0
+			w.flush(false)
 		} else {
 			w.writer.Write(p)
 			w.size = 0
@@ -130,32 +123,21 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 			if w.size > 0 {
 				copy(w.buffer[w.size:], p)
 				w.size += length
-				w.writer.Write(w.buffer[:w.size])
-				if w.lowMemory {
-					assignPool(w.mss).Put(w.buffer)
-				}
-				w.size = 0
-				w.count = 0
+				w.flush(false)
 			} else {
 				w.writer.Write(p)
 				w.size = 0
 				w.count = 0
 			}
 		} else {
-			if w.lowMemory && len(w.buffer) == 0 {
+			if w.shared && len(w.buffer) == 0 {
 				w.buffer = assignPool(w.mss).Get().([]byte)
 			}
 			copy(w.buffer[w.size:], p)
 			w.size += length
-			w.count += 1
+			w.count++
 			if w.count > batch-w.thresh {
-				w.writer.Write(w.buffer[:w.size])
-				if w.lowMemory {
-					assignPool(w.mss).Put(w.buffer)
-				}
-				w.size = 0
-				w.count = 0
-				w.writeCnt = 0
+				w.flush(true)
 			}
 			select {
 			case w.trigger <- struct{}{}:
@@ -169,32 +151,21 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				if w.size > 0 {
 					copy(w.buffer[w.size:], p)
 					w.size += length
-					w.writer.Write(w.buffer[:w.size])
-					if w.lowMemory {
-						assignPool(w.mss).Put(w.buffer)
-					}
-					w.size = 0
-					w.count = 0
+					w.flush(false)
 				} else {
 					w.writer.Write(p)
 					w.size = 0
 					w.count = 0
 				}
 			} else {
-				if w.lowMemory && len(w.buffer) == 0 {
+				if w.shared && len(w.buffer) == 0 {
 					w.buffer = assignPool(w.mss).Get().([]byte)
 				}
 				copy(w.buffer[w.size:], p)
 				w.size += length
-				w.count += 1
+				w.count++
 				if w.count > batch-alpha {
-					w.writer.Write(w.buffer[:w.size])
-					if w.lowMemory {
-						assignPool(w.mss).Put(w.buffer)
-					}
-					w.size = 0
-					w.count = 0
-					w.writeCnt = 0
+					w.flush(true)
 				}
 				select {
 				case w.trigger <- struct{}{}:
@@ -202,20 +173,14 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 				}
 			}
 		} else {
-			if w.lowMemory && len(w.buffer) == 0 {
+			if w.shared && len(w.buffer) == 0 {
 				w.buffer = assignPool(w.mss).Get().([]byte)
 			}
 			copy(w.buffer[w.size:], p)
 			w.size += length
-			w.count += 1
+			w.count++
 			if w.count > batch-1 {
-				w.writer.Write(w.buffer[:w.size])
-				if w.lowMemory {
-					assignPool(w.mss).Put(w.buffer)
-				}
-				w.size = 0
-				w.count = 0
-				w.writeCnt = 0
+				w.flush(true)
 			}
 			select {
 			case w.trigger <- struct{}{}:
@@ -226,18 +191,25 @@ func (w *AutoWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func (w *AutoWriter) run() {
-	for {
-		w.mu.Lock()
-		if w.size > 0 {
-			w.writer.Write(w.buffer[:w.size])
-			if w.lowMemory {
-				assignPool(w.mss).Put(w.buffer)
-			}
-			w.size = 0
-			w.count = 0
+func (w *Writer) flush(reset bool) (err error) {
+	if w.size > 0 {
+		_, err = w.writer.Write(w.buffer[:w.size])
+		if w.shared {
+			assignPool(w.mss).Put(w.buffer)
+		}
+		w.size = 0
+		w.count = 0
+		if reset {
 			w.writeCnt = 0
 		}
+	}
+	return
+}
+
+func (w *Writer) run() {
+	for {
+		w.mu.Lock()
+		w.flush(true)
 		w.mu.Unlock()
 		var d time.Duration
 		if w.batch() < w.thresh*2 {
@@ -245,37 +217,31 @@ func (w *AutoWriter) run() {
 		} else {
 			d = time.Microsecond * 100
 		}
+		timer := time.NewTimer(d)
 		select {
-		case <-time.After(d):
+		case <-timer.C:
 		case <-w.trigger:
 			time.Sleep(time.Microsecond * time.Duration(w.batch()))
+			timer.Stop()
 		case <-w.done:
+			timer.Stop()
 			return
 		}
 	}
 }
 
-func (w *AutoWriter) Close() error {
+// Close closes the writer, but do not close the underlying io.Writer
+func (w *Writer) Close() (err error) {
 	w.mu.Lock()
-	if w.size > 0 {
-		w.writer.Write(w.buffer[:w.size])
-		if w.lowMemory {
-			assignPool(w.mss).Put(w.buffer)
-		}
-		w.size = 0
-		w.count = 0
-		w.writeCnt = 0
-	}
+	err = w.flush(true)
 	w.mu.Unlock()
 	if !atomic.CompareAndSwapInt32(&w.closed, 0, 1) {
-		return nil
+		return err
 	}
-	if !w.noDelay && w.done != nil {
+	if w.concurrency != nil {
 		close(w.done)
-	}
-	if !w.noDelay && w.trigger != nil {
 		close(w.trigger)
+		w.buffer = nil
 	}
-	w.buffer = nil
-	return nil
+	return err
 }
