@@ -75,7 +75,7 @@ func RunParallel(num int, batch bool) {
 	worker.w.Close()
 	w.Close()
 	<-done
-	fmt.Printf("time - %.1fs, batch - %t,\tparallel - %d,\twrite - %dMByte/s\n",
+	fmt.Printf("time - %.1fs,\tbatch - %t,\tparallel - %d,\twrite - %dMByte/s\n",
 		float64(time.Now().Sub(start))/1E9, batch, num, size/1E6)
 }
 
@@ -107,12 +107,12 @@ func (w *Worker) run(wg *sync.WaitGroup) {
 
 #### Output
 ```
-time - 1.0s, batch - false,	parallel - 1,	write - 514MByte/s
-time - 1.0s, batch - false,	parallel - 16,	write - 386MByte/s
-time - 1.0s, batch - false,	parallel - 32,	write - 382MByte/s
-time - 1.0s, batch - true,	parallel - 1,	write - 498MByte/s
-time - 1.0s, batch - true,	parallel - 16,	write - 1005MByte/s
-time - 1.0s, batch - true,	parallel - 32,	write - 2006MByte/s
+time - 1.0s,	batch - false,	parallel - 1,	write - 554MByte/s
+time - 1.0s,	batch - false,	parallel - 16,	write - 384MByte/s
+time - 1.0s,	batch - false,	parallel - 32,	write - 384MByte/s
+time - 1.0s,	batch - true,	parallel - 1,	write - 485MByte/s
+time - 1.0s,	batch - true,	parallel - 16,	write - 962MByte/s
+time - 1.0s,	batch - true,	parallel - 32,	write - 2013MByte/s
 ```
 
 ### License
