@@ -1,5 +1,5 @@
 # writer
-[![GoDoc](https://godoc.org/github.com/hslam/writer?status.svg)](https://godoc.org/github.com/hslam/writer)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/hslam/writer)](https://pkg.go.dev/github.com/hslam/writer)
 [![Build Status](https://travis-ci.org/hslam/writer.svg?branch=master)](https://travis-ci.org/hslam/writer)
 [![codecov](https://codecov.io/gh/hslam/writer/branch/master/graph/badge.svg)](https://codecov.io/gh/hslam/writer)
 [![Go Report Card](https://goreportcard.com/badge/github.com/hslam/writer?v=7e100)](https://goreportcard.com/report/github.com/hslam/writer)
@@ -119,7 +119,7 @@ time - 1.0s,	batch - true,	parallel - 32,	write - 2013MByte/s
 This package is licensed under a MIT license (Copyright (c) 2020 Meng Huang)
 
 
-### Authors
+### Author
 writer was written by Meng Huang.
 
 
