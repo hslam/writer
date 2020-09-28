@@ -11,6 +11,10 @@ Package writer implements batch writing for an io.Writer object with the concurr
 * Shared Buffer
 * Auto Batch Writing
 
+##### Write Throughputs
+
+<img src="https://raw.githubusercontent.com/hslam/writer/master/write-throughputs.png"  alt="write-throughputs" align=center>
+
 ## Get started
 
 ### Install
