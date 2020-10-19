@@ -87,6 +87,10 @@ func testConcurrency(batch int, t *testing.T) {
 	wg.Wait()
 	writer.Close()
 	w.Close()
+	n, err := writer.Write(msg)
+	if n != 0 || err == nil {
+		t.Error(n, err)
+	}
 	<-done
 	if size != 512*100*batch {
 		t.Error(size)

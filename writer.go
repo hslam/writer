@@ -107,15 +107,15 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 			w.flush(false)
 		}
 		if length > 0 {
-			w.writer.Write(p)
+			_, err = w.writer.Write(p)
 		}
 	} else if batch <= w.thresh {
 		if w.size > 0 {
 			copy(w.buffer[w.size:], p)
 			w.size += length
-			w.flush(false)
+			err = w.flush(false)
 		} else {
-			w.writer.Write(p)
+			n, err = w.writer.Write(p)
 			w.size = 0
 			w.count = 0
 		}
@@ -124,9 +124,9 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 			if w.size > 0 {
 				copy(w.buffer[w.size:], p)
 				w.size += length
-				w.flush(false)
+				err = w.flush(false)
 			} else {
-				w.writer.Write(p)
+				_, err = w.writer.Write(p)
 				w.size = 0
 				w.count = 0
 			}
@@ -138,7 +138,7 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 			w.size += length
 			w.count++
 			if w.count > batch-w.thresh {
-				w.flush(true)
+				err = w.flush(true)
 			}
 			select {
 			case w.trigger <- struct{}{}:
@@ -152,9 +152,9 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 				if w.size > 0 {
 					copy(w.buffer[w.size:], p)
 					w.size += length
-					w.flush(false)
+					err = w.flush(false)
 				} else {
-					w.writer.Write(p)
+					_, err = w.writer.Write(p)
 					w.size = 0
 					w.count = 0
 				}
@@ -166,7 +166,7 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 				w.size += length
 				w.count++
 				if w.count > batch-alpha {
-					w.flush(true)
+					err = w.flush(true)
 				}
 				select {
 				case w.trigger <- struct{}{}:
@@ -181,7 +181,7 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 			w.size += length
 			w.count++
 			if w.count > batch-1 {
-				w.flush(true)
+				err = w.flush(true)
 			}
 			select {
 			case w.trigger <- struct{}{}:
@@ -189,7 +189,10 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 			}
 		}
 	}
-	return len(p), nil
+	if err != nil {
+		return 0, err
+	}
+	return len(p), err
 }
 
 func (w *Writer) flush(reset bool) (err error) {
