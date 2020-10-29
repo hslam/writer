@@ -1,7 +1,7 @@
 // Copyright (c) 2020 Meng Huang (mhboy@outlook.com)
 // This package is licensed under a MIT license that can be found in the LICENSE file.
 
-// Package writer implements batch writing for an io.Writer object with the concurrency.
+// Package writer implements batch writing.
 package writer
 
 import (
@@ -36,6 +36,13 @@ func assignPool(size int) *sync.Pool {
 	}
 }
 
+// Flusher is the interface that wraps the basic Flush method.
+//
+// Flush writes any buffered data to the underlying io.Writer.
+type Flusher interface {
+	Flush() (err error)
+}
+
 // Writer implements batch writing for an io.Writer object.
 type Writer struct {
 	shared      bool
@@ -56,7 +63,7 @@ type Writer struct {
 }
 
 // NewWriter returns a new batch Writer with the concurrency.
-func NewWriter(writer io.Writer, concurrency func() int, size int, shared bool) io.WriteCloser {
+func NewWriter(writer io.Writer, concurrency func() int, size int, shared bool) *Writer {
 	if size < 1 {
 		size = maximumSegmentSize
 	}
@@ -195,6 +202,14 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 	return len(p), err
 }
 
+// Flush writes any buffered data to the underlying io.Writer.
+func (w *Writer) Flush() error {
+	w.mu.Lock()
+	err := w.flush(true)
+	w.mu.Unlock()
+	return err
+}
+
 func (w *Writer) flush(reset bool) (err error) {
 	if w.size > 0 {
 		_, err = w.writer.Write(w.buffer[:w.size])
@@ -238,9 +253,7 @@ func (w *Writer) run() {
 // Close closes the writer, but do not close the underlying io.Writer
 func (w *Writer) Close() (err error) {
 	if w.concurrency != nil {
-		w.mu.Lock()
-		err = w.flush(true)
-		w.mu.Unlock()
+		w.Flush()
 	}
 	if !atomic.CompareAndSwapInt32(&w.closed, 0, 1) {
 		return err
