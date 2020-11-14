@@ -27,7 +27,7 @@ import "github.com/hslam/writer"
 ```
 ### Usage
 #### Example
-```
+```go
 package main
 
 import (
