@@ -79,8 +79,8 @@ func NewWriter(writer io.Writer, concurrency func() int, size int, shared bool) 
 		w.mss = size
 		w.buffer = buffer
 		w.concurrency = concurrency
-		w.trigger = make(chan struct{}, 10)
-		w.done = make(chan struct{}, 1)
+		w.trigger = make(chan struct{})
+		w.done = make(chan struct{})
 		go w.run()
 	}
 	return w
@@ -241,8 +241,8 @@ func (w *Writer) run() {
 		select {
 		case <-timer.C:
 		case <-w.trigger:
-			time.Sleep(time.Microsecond * time.Duration(w.batch()))
 			timer.Stop()
+			time.Sleep(time.Microsecond * time.Duration(w.batch()))
 		case <-w.done:
 			timer.Stop()
 			return
