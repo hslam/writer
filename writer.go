@@ -260,8 +260,6 @@ func (w *Writer) Close() (err error) {
 	}
 	if w.concurrency != nil {
 		close(w.done)
-		close(w.trigger)
-		w.buffer = nil
 	}
 	return err
 }
