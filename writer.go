@@ -10,6 +10,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -36,7 +37,6 @@ type Flusher interface {
 type Writer struct {
 	lock        sync.Mutex
 	cond        sync.Cond
-	wg          sync.WaitGroup
 	writer      io.Writer
 	shared      bool
 	concurrency func() int
@@ -46,6 +46,7 @@ type Writer struct {
 	buffer      []byte
 	size        int
 	closed      int32
+	done        int32
 }
 
 // NewWriter returns a new batch Writer with the concurrency.
@@ -65,7 +66,6 @@ func NewWriter(writer io.Writer, concurrency func() int, size int, shared bool) 
 		buffer:      buffer,
 	}
 	w.cond.L = &w.lock
-	w.wg.Add(1)
 	go w.run()
 	return w
 }
@@ -148,7 +148,7 @@ func (w *Writer) run() {
 		w.flush()
 		w.cond.Wait()
 		if atomic.LoadInt32(&w.closed) > 0 {
-			w.wg.Done()
+			atomic.StoreInt32(&w.done, 1)
 			return
 		}
 		w.lock.Unlock()
@@ -161,7 +161,12 @@ func (w *Writer) Close() (err error) {
 		return nil
 	}
 	err = w.Flush()
-	w.cond.Signal()
-	w.wg.Wait()
+	for {
+		w.cond.Signal()
+		time.Sleep(time.Microsecond * 100)
+		if atomic.LoadInt32(&w.done) > 0 {
+			break
+		}
+	}
 	return nil
 }
