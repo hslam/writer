@@ -5,36 +5,25 @@
 package writer
 
 import (
+	"errors"
+	"github.com/hslam/buffer"
 	"io"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
-const thresh = 4
-const maximumSegmentSize = 65536
-const lastsSize = 4
+const (
+	thresh             = 4
+	maximumSegmentSize = 65536
+	lastsSize          = 4
+)
 
 var (
-	buffers = sync.Map{}
-	assign  int32
+	buffers = buffer.NewBuffers(1024)
 )
 
-func assignPool(size int) *sync.Pool {
-	for {
-		if p, ok := buffers.Load(size); ok {
-			return p.(*sync.Pool)
-		}
-		if atomic.CompareAndSwapInt32(&assign, 0, 1) {
-			var pool = &sync.Pool{New: func() interface{} {
-				return make([]byte, size)
-			}}
-			buffers.Store(size, pool)
-			atomic.StoreInt32(&assign, 0)
-			return pool
-		}
-	}
-}
+// ErrWriterClosed is returned by the Writer's Write methods after a call to Close.
+var ErrWriterClosed = errors.New("Writer closed")
 
 // Flusher is the interface that wraps the basic Flush method.
 //
@@ -45,20 +34,17 @@ type Flusher interface {
 
 // Writer implements batch writing for an io.Writer object.
 type Writer struct {
-	shared      bool
-	mu          *sync.Mutex
+	lock        sync.Mutex
+	cond        sync.Cond
+	wg          sync.WaitGroup
 	writer      io.Writer
+	shared      bool
+	concurrency func() int
+	lasts       [lastsSize]int
+	cursor      int
 	mss         int
 	buffer      []byte
 	size        int
-	count       int
-	writeCnt    int
-	concurrency func() int
-	thresh      int
-	lasts       [lastsSize]int
-	cursor      int
-	trigger     chan struct{}
-	done        chan struct{}
 	closed      int32
 }
 
@@ -67,22 +53,20 @@ func NewWriter(writer io.Writer, concurrency func() int, size int, shared bool) 
 	if size < 1 {
 		size = maximumSegmentSize
 	}
-	w := &Writer{writer: writer}
-	if concurrency != nil {
-		var buffer []byte
-		if !shared {
-			buffer = make([]byte, size)
-		}
-		w.shared = shared
-		w.mu = &sync.Mutex{}
-		w.thresh = thresh
-		w.mss = size
-		w.buffer = buffer
-		w.concurrency = concurrency
-		w.trigger = make(chan struct{})
-		w.done = make(chan struct{})
-		go w.run()
+	var buffer []byte
+	if !shared {
+		buffer = make([]byte, size)
 	}
+	w := &Writer{
+		writer:      writer,
+		concurrency: concurrency,
+		shared:      shared,
+		mss:         size,
+		buffer:      buffer,
+	}
+	w.cond.L = &w.lock
+	w.wg.Add(1)
+	go w.run()
 	return w
 }
 
@@ -101,165 +85,83 @@ func (w *Writer) batch() (n int) {
 // Write writes the contents of p into the buffer or the underlying io.Writer.
 // It returns the number of bytes written.
 func (w *Writer) Write(p []byte) (n int, err error) {
-	if w.concurrency == nil {
-		return w.writer.Write(p)
+	if atomic.LoadInt32(&w.closed) > 0 {
+		return 0, ErrWriterClosed
 	}
-	batch := w.batch()
+	direct := true
+	if w.concurrency != nil {
+		if w.batch() > thresh {
+			direct = false
+		}
+	}
 	length := len(p)
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.writeCnt++
-	if w.size+length > w.mss {
+	var flushed bool
+	w.lock.Lock()
+	if direct || w.size+length > w.mss {
 		if w.size > 0 {
-			w.flush(false)
+			w.flush()
 		}
 		if length > 0 {
 			_, err = w.writer.Write(p)
 		}
-	} else if batch <= w.thresh {
-		if w.size > 0 {
-			copy(w.buffer[w.size:], p)
-			w.size += length
-			err = w.flush(false)
-		} else {
-			n, err = w.writer.Write(p)
-			w.size = 0
-			w.count = 0
-		}
-	} else if batch <= w.thresh*w.thresh {
-		if w.writeCnt < w.thresh {
-			if w.size > 0 {
-				copy(w.buffer[w.size:], p)
-				w.size += length
-				err = w.flush(false)
-			} else {
-				_, err = w.writer.Write(p)
-				w.size = 0
-				w.count = 0
-			}
-		} else {
-			if w.shared && len(w.buffer) == 0 {
-				w.buffer = assignPool(w.mss).Get().([]byte)
-			}
-			copy(w.buffer[w.size:], p)
-			w.size += length
-			w.count++
-			if w.count > batch-w.thresh {
-				err = w.flush(true)
-			}
-			select {
-			case w.trigger <- struct{}{}:
-			default:
-			}
-		}
+		flushed = true
 	} else {
-		alpha := w.thresh*2 - (batch-1)/w.thresh
-		if alpha > 1 {
-			if w.writeCnt < alpha {
-				if w.size > 0 {
-					copy(w.buffer[w.size:], p)
-					w.size += length
-					err = w.flush(false)
-				} else {
-					_, err = w.writer.Write(p)
-					w.size = 0
-					w.count = 0
-				}
-			} else {
-				if w.shared && len(w.buffer) == 0 {
-					w.buffer = assignPool(w.mss).Get().([]byte)
-				}
-				copy(w.buffer[w.size:], p)
-				w.size += length
-				w.count++
-				if w.count > batch-alpha {
-					err = w.flush(true)
-				}
-				select {
-				case w.trigger <- struct{}{}:
-				default:
-				}
-			}
-		} else {
-			if w.shared && len(w.buffer) == 0 {
-				w.buffer = assignPool(w.mss).Get().([]byte)
-			}
-			copy(w.buffer[w.size:], p)
-			w.size += length
-			w.count++
-			if w.count > batch-1 {
-				err = w.flush(true)
-			}
-			select {
-			case w.trigger <- struct{}{}:
-			default:
-			}
+		if w.shared && len(w.buffer) == 0 {
+			w.buffer = buffers.AssignPool(w.mss).GetBuffer(w.mss)
 		}
+		copy(w.buffer[w.size:], p)
+		w.size += length
 	}
-	if err != nil {
-		return 0, err
+	w.lock.Unlock()
+	if !flushed {
+		w.cond.Signal()
 	}
-	return len(p), err
+	if err == nil {
+		n = len(p)
+	}
+	return n, err
 }
 
 // Flush writes any buffered data to the underlying io.Writer.
 func (w *Writer) Flush() error {
-	w.mu.Lock()
-	err := w.flush(true)
-	w.mu.Unlock()
+	w.lock.Lock()
+	err := w.flush()
+	w.lock.Unlock()
 	return err
 }
 
-func (w *Writer) flush(reset bool) (err error) {
+func (w *Writer) flush() (err error) {
 	if w.size > 0 {
 		_, err = w.writer.Write(w.buffer[:w.size])
 		if w.shared {
-			assignPool(w.mss).Put(w.buffer)
+			buffers.AssignPool(w.mss).PutBuffer(w.buffer)
 			w.buffer = nil
 		}
 		w.size = 0
-		w.count = 0
-		if reset {
-			w.writeCnt = 0
-		}
 	}
 	return
 }
 
 func (w *Writer) run() {
 	for {
-		w.mu.Lock()
-		w.flush(true)
-		w.mu.Unlock()
-		var d time.Duration
-		if w.batch() < w.thresh*2 {
-			d = time.Second
-		} else {
-			d = time.Microsecond * 100
-		}
-		timer := time.NewTimer(d)
-		select {
-		case <-timer.C:
-		case <-w.trigger:
-			timer.Stop()
-			time.Sleep(time.Microsecond * time.Duration(w.batch()))
-		case <-w.done:
-			timer.Stop()
+		w.lock.Lock()
+		w.flush()
+		w.cond.Wait()
+		if atomic.LoadInt32(&w.closed) > 0 {
+			w.wg.Done()
 			return
 		}
+		w.lock.Unlock()
 	}
 }
 
 // Close closes the writer, but do not close the underlying io.Writer
 func (w *Writer) Close() (err error) {
-	if w.concurrency != nil {
-		w.Flush()
-	}
 	if !atomic.CompareAndSwapInt32(&w.closed, 0, 1) {
-		return err
+		return nil
 	}
-	if w.concurrency != nil {
-		close(w.done)
-	}
-	return err
+	err = w.Flush()
+	w.cond.Signal()
+	w.wg.Wait()
+	return nil
 }
