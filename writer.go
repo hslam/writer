@@ -144,10 +144,19 @@ func (w *Writer) flush() (err error) {
 
 func (w *Writer) run() {
 	for {
+		var batch int
+		if w.concurrency != nil {
+			batch = w.batch()
+		}
+		var duration = time.Microsecond * time.Duration(batch/(thresh*thresh))
+		if duration > 0 {
+			time.Sleep(duration)
+		}
 		w.lock.Lock()
 		w.flush()
 		w.cond.Wait()
 		if atomic.LoadInt32(&w.closed) > 0 {
+			w.lock.Unlock()
 			atomic.StoreInt32(&w.done, 1)
 			return
 		}
