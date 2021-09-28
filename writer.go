@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	thresh             = 4
+	thresh             = 16
 	maximumSegmentSize = 65536
 	lastsSize          = 4
 )
@@ -148,7 +148,10 @@ func (w *Writer) run() {
 		if w.concurrency != nil {
 			batch = w.batch()
 		}
-		var duration = time.Microsecond * time.Duration(batch/(thresh*thresh))
+		var duration = time.Microsecond * time.Duration(batch/thresh/8)
+		if duration > time.Microsecond*64 {
+			duration = time.Microsecond * 64
+		}
 		if duration > 0 {
 			time.Sleep(duration)
 		}

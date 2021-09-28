@@ -55,6 +55,7 @@ func TestConcurrency(t *testing.T) {
 	testConcurrency(1024, t)
 	testConcurrency(4096, t)
 	testConcurrency(8192, t)
+	testConcurrency(16384, t)
 }
 
 func testConcurrency(batch int, t *testing.T) {
