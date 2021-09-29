@@ -55,7 +55,6 @@ func TestConcurrency(t *testing.T) {
 	testConcurrency(1024, t)
 	testConcurrency(4096, t)
 	testConcurrency(8192, t)
-	testConcurrency(16384, t)
 }
 
 func testConcurrency(batch int, t *testing.T) {
@@ -78,15 +77,17 @@ func testConcurrency(batch int, t *testing.T) {
 		close(done)
 	}()
 	writer := NewWriter(w, concurrency, 0, false)
+	num := 512
 	msg := make([]byte, 512)
 	wg := sync.WaitGroup{}
 	for i := 0; i < batch; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 100; i++ {
+			for i := 0; i < num; i++ {
 				atomic.AddInt64(&count, 1)
 				writer.Write(msg)
+				time.Sleep(time.Millisecond)
 				atomic.AddInt64(&count, -1)
 			}
 		}()
@@ -99,7 +100,7 @@ func testConcurrency(batch int, t *testing.T) {
 		t.Error(n, err)
 	}
 	<-done
-	if size != 512*100*batch {
+	if size != 512*num*batch {
 		t.Error(size)
 	}
 }
