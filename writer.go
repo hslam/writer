@@ -43,6 +43,7 @@ type Writer struct {
 	lasts       [lastsSize]int
 	cursor      int
 	mss         int
+	pool        *buffer.Pool
 	buffer      []byte
 	writing     int32
 	buffers     [][]byte
@@ -56,15 +57,17 @@ func NewWriter(writer io.Writer, concurrency func() int, size int, shared bool) 
 	if size < 1 {
 		size = maximumSegmentSize
 	}
+	var pool = buffers.AssignPool(size)
 	var buffer []byte
 	if !shared {
-		buffer = make([]byte, size)
+		buffer = pool.GetBuffer(size)
 	}
 	w := &Writer{
 		writer:      writer,
 		concurrency: concurrency,
 		shared:      shared,
 		mss:         size,
+		pool:        pool,
 		buffer:      buffer,
 	}
 	w.cond.L = &w.lock
@@ -110,30 +113,19 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 		}
 		atomic.StoreInt32(&w.writing, 0)
 	} else {
-		if length > 0 && cap(w.buffer) == 0 {
-			w.buffer = buffers.AssignPool(w.mss).GetBuffer(w.mss)
+		if cap(w.buffer) == 0 {
+			w.buffer = w.pool.GetBuffer(w.mss)
 		}
 		retain := length
 		for retain > w.mss {
 			n := copy(w.buffer[w.size:w.mss], p[length-retain:])
-			buffer := w.buffer[:w.mss]
-			w.buffers = append(w.buffers, buffer)
-			w.buffer = nil
-			w.size = 0
-			if cap(w.buffer) == 0 {
-				w.buffer = buffers.AssignPool(w.mss).GetBuffer(w.mss)
-			}
+			w.size = w.mss
+			w.push()
 			retain -= n
 		}
 		if retain > 0 {
 			if w.size+retain > w.mss {
-				buffer := w.buffer[:w.size]
-				w.buffers = append(w.buffers, buffer)
-				w.buffer = nil
-				w.size = 0
-			}
-			if cap(w.buffer) == 0 {
-				w.buffer = buffers.AssignPool(w.mss).GetBuffer(w.mss)
+				w.push()
 			}
 			copy(w.buffer[w.size:], p)
 			w.size += retain
@@ -145,6 +137,16 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 		n = len(p)
 	}
 	return n, err
+}
+
+func (w *Writer) push() {
+	buffer := w.buffer[:w.size]
+	w.buffers = append(w.buffers, buffer)
+	w.buffer = nil
+	w.size = 0
+	if cap(w.buffer) == 0 {
+		w.buffer = w.pool.GetBuffer(w.mss)
+	}
 }
 
 func (w *Writer) waitForWriting() {
@@ -175,7 +177,7 @@ func (w *Writer) cache() (c [][]byte) {
 		w.size = 0
 		w.buffers = append(w.buffers, buffer)
 		if !w.shared {
-			w.buffer = buffers.AssignPool(w.mss).GetBuffer(w.mss)
+			w.buffer = w.pool.GetBuffer(w.mss)
 		}
 	}
 	c = w.buffers
@@ -187,7 +189,7 @@ func (w *Writer) flush(c [][]byte) (err error) {
 	if len(c) > 0 {
 		for _, buffer := range c {
 			_, err = w.writer.Write(buffer)
-			buffers.AssignPool(w.mss).PutBuffer(buffer)
+			w.pool.PutBuffer(buffer)
 		}
 	}
 	return
