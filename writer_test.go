@@ -48,16 +48,18 @@ func TestNoConcurrency(t *testing.T) {
 }
 
 func TestConcurrency(t *testing.T) {
-	testConcurrency(1, t)
-	testConcurrency(4, t)
-	testConcurrency(16, t)
-	testConcurrency(32, t)
-	testConcurrency(1024, t)
-	testConcurrency(4096, t)
-	testConcurrency(8192, t)
+	testConcurrency(1, 0, t)
+	testConcurrency(4, 0, t)
+	testConcurrency(16, 128, t)
+	testConcurrency(64, 128, t)
+	testConcurrency(256, 128, t)
+	testConcurrency(1024, 128, t)
+	testConcurrency(16384, 0, t)
+	testConcurrency(32768, 0, t)
+	testConcurrency(65536, 0, t)
 }
 
-func testConcurrency(batch int, t *testing.T) {
+func testConcurrency(batch, mss int, t *testing.T) {
 	r, w := io.Pipe()
 	count := int64(0)
 	concurrency := func() int {
@@ -76,7 +78,7 @@ func testConcurrency(batch int, t *testing.T) {
 		}
 		close(done)
 	}()
-	writer := NewWriter(w, concurrency, 0, false)
+	writer := NewWriter(w, concurrency, mss, false)
 	num := 512
 	msg := make([]byte, 512)
 	wg := sync.WaitGroup{}

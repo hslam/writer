@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	thresh             = 32
+	thresh             = 128
 	maximumSegmentSize = 65536
 	lastsSize          = 4
 )
@@ -48,6 +48,7 @@ type Writer struct {
 	writing     int32
 	buffers     [][]byte
 	size        int
+	length      int
 	closed      int32
 	done        int32
 }
@@ -103,29 +104,27 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 	w.lock.Lock()
 	if direct && atomic.CompareAndSwapInt32(&w.writing, 0, 1) {
 		var c [][]byte
+		var l int
 		if w.cached() {
-			c = w.cache()
+			c, l = w.cache()
 		}
-		w.lock.Unlock()
-		w.flush(c)
-		if length > 0 {
-			_, err = w.writer.Write(p)
-		}
+		w.flush(c, l, p)
 		atomic.StoreInt32(&w.writing, 0)
+		w.lock.Unlock()
 	} else {
-		if cap(w.buffer) == 0 {
-			w.buffer = w.pool.GetBuffer(w.mss)
-		}
+		w.checkBuffer()
 		retain := length
 		for retain > w.mss {
 			n := copy(w.buffer[w.size:w.mss], p[length-retain:])
 			w.size = w.mss
 			w.push()
+			w.checkBuffer()
 			retain -= n
 		}
 		if retain > 0 {
 			if w.size+retain > w.mss {
 				w.push()
+				w.checkBuffer()
 			}
 			copy(w.buffer[w.size:], p)
 			w.size += retain
@@ -142,8 +141,12 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 func (w *Writer) push() {
 	buffer := w.buffer[:w.size]
 	w.buffers = append(w.buffers, buffer)
+	w.length += w.size
 	w.buffer = nil
 	w.size = 0
+}
+
+func (w *Writer) checkBuffer() {
 	if cap(w.buffer) == 0 {
 		w.buffer = w.pool.GetBuffer(w.mss)
 	}
@@ -158,10 +161,10 @@ func (w *Writer) waitForWriting() {
 // Flush writes any buffered data to the underlying io.Writer.
 func (w *Writer) Flush() error {
 	w.lock.Lock()
-	c := w.cache()
+	c, l := w.cache()
 	w.lock.Unlock()
 	w.waitForWriting()
-	err := w.flush(c)
+	err := w.flush(c, l, nil)
 	atomic.StoreInt32(&w.writing, 0)
 	return err
 }
@@ -170,27 +173,45 @@ func (w *Writer) cached() bool {
 	return len(w.buffers) > 0 || w.size > 0
 }
 
-func (w *Writer) cache() (c [][]byte) {
+func (w *Writer) cache() (c [][]byte, length int) {
 	if w.size > 0 {
-		buffer := w.buffer[:w.size]
-		w.buffer = nil
-		w.size = 0
-		w.buffers = append(w.buffers, buffer)
+		w.push()
 		if !w.shared {
 			w.buffer = w.pool.GetBuffer(w.mss)
 		}
 	}
 	c = w.buffers
+	length = w.length
 	w.buffers = nil
+	w.length = 0
 	return
 }
 
-func (w *Writer) flush(c [][]byte) (err error) {
-	if len(c) > 0 {
-		for _, buffer := range c {
-			_, err = w.writer.Write(buffer)
-			w.pool.PutBuffer(buffer)
+func (w *Writer) flush(c [][]byte, l int, p []byte) (err error) {
+	length := len(p)
+	if l > 0 {
+		size := l + length
+		pool := buffers.AssignPool(size)
+		buf := pool.GetBuffer(size)
+		var pos int
+		if len(c) > 0 {
+			for _, b := range c {
+				s := copy(buf[pos:], b)
+				pos += s
+				w.pool.PutBuffer(b)
+			}
 		}
+		if length > 0 {
+			s := copy(buf[pos:], p)
+			pos += s
+		}
+
+		if pos > 0 {
+			_, err = w.writer.Write(buf[:pos])
+		}
+		pool.PutBuffer(buf)
+	} else if length > 0 {
+		_, err = w.writer.Write(p)
 	}
 	return
 }
@@ -212,10 +233,10 @@ func (w *Writer) run() {
 			}
 		}
 		w.lock.Lock()
-		c := w.cache()
+		c, l := w.cache()
 		w.lock.Unlock()
 		w.waitForWriting()
-		w.flush(c)
+		w.flush(c, l, nil)
 		atomic.StoreInt32(&w.writing, 0)
 		w.lock.Lock()
 		if w.cached() {
