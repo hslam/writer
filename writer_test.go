@@ -79,7 +79,7 @@ func testConcurrency(batch, mss int, t *testing.T) {
 		close(done)
 	}()
 	writer := NewWriter(w, concurrency, mss, false)
-	num := 512
+	num := 256
 	msg := make([]byte, 512)
 	wg := sync.WaitGroup{}
 	for i := 0; i < batch; i++ {
