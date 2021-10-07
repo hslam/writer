@@ -52,7 +52,7 @@ func TestConcurrency(t *testing.T) {
 	testConcurrency(4, 0, t)
 	testConcurrency(64, 128, t)
 	testConcurrency(256, 128, t)
-	testConcurrency(65536, 0, t)
+	testConcurrency(32768, 1024, t)
 }
 
 func testConcurrency(batch, mss int, t *testing.T) {
@@ -85,7 +85,7 @@ func testConcurrency(batch, mss int, t *testing.T) {
 			for i := 0; i < num; i++ {
 				atomic.AddInt64(&count, 1)
 				writer.Write(msg)
-				time.Sleep(time.Millisecond)
+				time.Sleep(time.Millisecond * 10)
 				atomic.AddInt64(&count, -1)
 			}
 		}()
