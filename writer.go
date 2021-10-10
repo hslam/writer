@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	thresh             = 128
+	thresh             = 1
 	maximumSegmentSize = 65536
 	lastsSize          = 4
 )
@@ -45,7 +45,6 @@ type Writer struct {
 	mss         int
 	pool        *buffer.Pool
 	buffer      []byte
-	writing     int32
 	buffers     [][]byte
 	size        int
 	length      int
@@ -94,41 +93,18 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 	if atomic.LoadInt32(&w.closed) > 0 {
 		return 0, ErrWriterClosed
 	}
-	direct := true
+	direct := false
 	if w.concurrency != nil {
-		if w.batch() > thresh {
-			direct = false
+		if w.batch() <= thresh {
+			direct = true
 		}
 	}
-	length := len(p)
 	w.lock.Lock()
-	if direct && atomic.CompareAndSwapInt32(&w.writing, 0, 1) {
-		var c [][]byte
-		var l int
-		if w.cached() {
-			c, l = w.cache()
-		}
-		w.flush(c, l, p)
-		atomic.StoreInt32(&w.writing, 0)
+	if direct {
+		err = w.flush(p)
 		w.lock.Unlock()
 	} else {
-		w.checkBuffer()
-		retain := length
-		for retain > w.mss {
-			n := copy(w.buffer[w.size:w.mss], p[length-retain:])
-			w.size = w.mss
-			w.push()
-			w.checkBuffer()
-			retain -= n
-		}
-		if retain > 0 {
-			if w.size+retain > w.mss {
-				w.push()
-				w.checkBuffer()
-			}
-			copy(w.buffer[w.size:], p)
-			w.size += retain
-		}
+		w.append(p)
 		w.lock.Unlock()
 		w.cond.Signal()
 	}
@@ -136,6 +112,27 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 		n = len(p)
 	}
 	return n, err
+}
+
+func (w *Writer) append(p []byte) {
+	length := len(p)
+	w.checkBuffer()
+	retain := length
+	for retain > w.mss {
+		n := copy(w.buffer[w.size:w.mss], p[length-retain:])
+		w.size = w.mss
+		w.push()
+		w.checkBuffer()
+		retain -= n
+	}
+	if retain > 0 {
+		if w.size+retain > w.mss {
+			w.push()
+			w.checkBuffer()
+		}
+		copy(w.buffer[w.size:], p)
+		w.size += retain
+	}
 }
 
 func (w *Writer) push() {
@@ -152,20 +149,11 @@ func (w *Writer) checkBuffer() {
 	}
 }
 
-func (w *Writer) waitForWriting() {
-	for atomic.CompareAndSwapInt32(&w.writing, 0, 1) {
-		time.Sleep(time.Microsecond)
-	}
-}
-
 // Flush writes any buffered data to the underlying io.Writer.
 func (w *Writer) Flush() error {
 	w.lock.Lock()
-	c, l := w.cache()
+	err := w.flush(nil)
 	w.lock.Unlock()
-	w.waitForWriting()
-	err := w.flush(c, l, nil)
-	atomic.StoreInt32(&w.writing, 0)
 	return err
 }
 
@@ -187,7 +175,12 @@ func (w *Writer) cache() (c [][]byte, length int) {
 	return
 }
 
-func (w *Writer) flush(c [][]byte, l int, p []byte) (err error) {
+func (w *Writer) flush(p []byte) (err error) {
+	var c [][]byte
+	var l int
+	if w.cached() {
+		c, l = w.cache()
+	}
 	length := len(p)
 	if l > 0 {
 		size := l + length
@@ -213,38 +206,14 @@ func (w *Writer) flush(c [][]byte, l int, p []byte) (err error) {
 	} else if length > 0 {
 		_, err = w.writer.Write(p)
 	}
+	w.size = 0
 	return
 }
 
 func (w *Writer) run() {
-	var sleep = true
 	for {
-		if sleep {
-			var batch int
-			if w.concurrency != nil {
-				batch = w.batch()
-			}
-			var duration = time.Microsecond * time.Duration(batch/thresh)
-			if duration > time.Microsecond*128 {
-				duration = time.Microsecond * 128
-			}
-			if duration > 0 {
-				time.Sleep(duration)
-			}
-		}
 		w.lock.Lock()
-		c, l := w.cache()
-		w.lock.Unlock()
-		w.waitForWriting()
-		w.flush(c, l, nil)
-		atomic.StoreInt32(&w.writing, 0)
-		w.lock.Lock()
-		if w.cached() {
-			sleep = false
-			w.lock.Unlock()
-			continue
-		}
-		sleep = true
+		w.flush(nil)
 		w.cond.Wait()
 		if atomic.LoadInt32(&w.closed) > 0 {
 			w.lock.Unlock()
