@@ -7,6 +7,7 @@ package writer
 import (
 	"errors"
 	"github.com/hslam/buffer"
+	"github.com/hslam/scheduler"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -17,10 +18,6 @@ const (
 	thresh             = 1
 	maximumSegmentSize = 65536
 	lastsSize          = 4
-)
-
-var (
-	buffers = buffer.NewBuffers(1024)
 )
 
 // ErrWriterClosed is returned by the Writer's Write methods after a call to Close.
@@ -37,8 +34,9 @@ type Flusher interface {
 type Writer struct {
 	lock        sync.Mutex
 	cond        sync.Cond
+	sched       scheduler.Scheduler
 	writer      io.Writer
-	shared      bool
+	scheduling  bool
 	concurrency func() int
 	lasts       [lastsSize]int
 	cursor      int
@@ -48,30 +46,35 @@ type Writer struct {
 	buffers     [][]byte
 	size        int
 	length      int
+	writing     uint64
 	closed      int32
 	done        int32
 }
 
 // NewWriter returns a new batch Writer with the concurrency.
-func NewWriter(writer io.Writer, concurrency func() int, size int, shared bool) *Writer {
+func NewWriter(writer io.Writer, concurrency func() int, size int, scheduling bool) *Writer {
 	if size < 1 {
 		size = maximumSegmentSize
 	}
-	var pool = buffers.AssignPool(size)
+	var pool = buffer.AssignPool(size)
 	var buffer []byte
-	if !shared {
+	if !scheduling {
 		buffer = pool.GetBuffer(size)
 	}
 	w := &Writer{
 		writer:      writer,
 		concurrency: concurrency,
-		shared:      shared,
+		scheduling:  scheduling,
 		mss:         size,
 		pool:        pool,
 		buffer:      buffer,
 	}
-	w.cond.L = &w.lock
-	go w.run()
+	if w.scheduling {
+		w.sched = scheduler.New(1, &scheduler.Options{Threshold: 2})
+	} else {
+		w.cond.L = &w.lock
+		go w.run()
+	}
 	return w
 }
 
@@ -106,7 +109,16 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 	} else {
 		w.append(p)
 		w.lock.Unlock()
-		w.cond.Signal()
+		if w.scheduling {
+			writing := atomic.AddUint64(&w.writing, 1)
+			w.sched.Schedule(func() {
+				if atomic.LoadUint64(&w.writing) == writing {
+					w.Flush()
+				}
+			})
+		} else {
+			w.cond.Signal()
+		}
 	}
 	if err == nil {
 		n = len(p)
@@ -164,7 +176,7 @@ func (w *Writer) cached() bool {
 func (w *Writer) cache() (c [][]byte, length int) {
 	if w.size > 0 {
 		w.push()
-		if !w.shared {
+		if !w.scheduling {
 			w.buffer = w.pool.GetBuffer(w.mss)
 		}
 	}
@@ -184,7 +196,7 @@ func (w *Writer) flush(p []byte) (err error) {
 	length := len(p)
 	if l > 0 {
 		size := l + length
-		pool := buffers.AssignPool(size)
+		pool := buffer.AssignPool(size)
 		buf := pool.GetBuffer(size)
 		var pos int
 		if len(c) > 0 {
@@ -230,11 +242,15 @@ func (w *Writer) Close() (err error) {
 		return nil
 	}
 	err = w.Flush()
-	for {
-		w.cond.Signal()
-		time.Sleep(time.Microsecond * 100)
-		if atomic.LoadInt32(&w.done) > 0 {
-			break
+	if w.scheduling {
+		w.sched.Close()
+	} else {
+		for {
+			w.cond.Signal()
+			time.Sleep(time.Microsecond * 100)
+			if atomic.LoadInt32(&w.done) > 0 {
+				break
+			}
 		}
 	}
 	return nil
