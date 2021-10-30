@@ -18,6 +18,7 @@ const (
 	thresh             = 1
 	maximumSegmentSize = 65536
 	lastsSize          = 4
+	delay              = time.Microsecond * 40
 )
 
 // ErrWriterClosed is returned by the Writer's Write methods after a call to Close.
@@ -113,6 +114,7 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 			writing := atomic.AddUint64(&w.writing, 1)
 			w.sched.Schedule(func() {
 				if atomic.LoadUint64(&w.writing) == writing {
+					time.Sleep(delay)
 					w.Flush()
 				}
 			})
@@ -224,6 +226,7 @@ func (w *Writer) flush(p []byte) (err error) {
 
 func (w *Writer) run() {
 	for {
+		time.Sleep(delay)
 		w.lock.Lock()
 		w.flush(nil)
 		w.cond.Wait()
