@@ -53,6 +53,7 @@ func TestConcurrency(t *testing.T) {
 	testConcurrency(64, 128, t)
 	testConcurrency(256, 128, t)
 	testConcurrency(8192, 1024, t)
+	testConcurrency(16384, 2048, t)
 }
 
 func testConcurrency(batch, mss int, t *testing.T) {
