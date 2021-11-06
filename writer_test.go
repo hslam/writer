@@ -52,8 +52,7 @@ func TestConcurrency(t *testing.T) {
 	testConcurrency(4, 0, t)
 	testConcurrency(64, 128, t)
 	testConcurrency(256, 128, t)
-	testConcurrency(8192, 1024, t)
-	testConcurrency(16384, 2048, t)
+	testConcurrency(1024, 1024, t)
 }
 
 func testConcurrency(batch, mss int, t *testing.T) {
@@ -239,4 +238,17 @@ func testSize(mms int, t *testing.T) {
 	if size != 512*100*64 {
 		t.Error(size)
 	}
+}
+
+func TestDelay(t *testing.T) {
+	_, w := io.Pipe()
+	count := int64(65536)
+	concurrency := func() int {
+		return int(atomic.LoadInt64(&count))
+	}
+	writer := NewWriter(w, concurrency, maximumSegmentSize, true)
+	writer.delay()
+	writer.Close()
+	w.Close()
+
 }
