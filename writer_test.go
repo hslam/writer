@@ -5,11 +5,64 @@ package writer
 
 import (
 	"io"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestWriter(t *testing.T) {
+	testWriter(4, 1, 2, t)
+	testWriter(4, 2, 2, t)
+	testWriter(4, 3, 2, t)
+	testWriter(4, 4, 2, t)
+	testWriter(65536, 128, 256, t)
+	testWriter(65536, 256, 256, t)
+	testWriter(65536, 512, 256, t)
+
+}
+
+func testWriter(contentSize, msgSize, mms int, t *testing.T) {
+	r, w := io.Pipe()
+	size := 0
+	done := make(chan struct{})
+	content := make([]byte, contentSize)
+	rand.Read(content)
+	res := []byte{}
+	go func() {
+		for {
+			buf := make([]byte, 4096)
+			n, err := r.Read(buf)
+			if err != nil {
+				break
+			}
+			size += n
+			res = append(res, buf[:n]...)
+
+		}
+		close(done)
+	}()
+	writer := NewWriter(w, nil, mms, false)
+	sent := 0
+	for contentSize-sent > 0 {
+		if contentSize-sent > msgSize {
+			writer.Write(content[sent : sent+msgSize])
+		} else {
+			writer.Write(content[sent:])
+		}
+		sent += msgSize
+	}
+	writer.Close()
+	w.Close()
+	<-done
+	if size != contentSize {
+		t.Error(size)
+	}
+	if string(content) != string(res) {
+		t.Errorf("contentSize %d, msgSize %d, mms %d, sent %v, got %v", contentSize, msgSize, mms, content, res)
+	}
+}
 
 func TestNoConcurrency(t *testing.T) {
 	r, w := io.Pipe()

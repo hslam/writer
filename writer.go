@@ -161,7 +161,7 @@ func (w *Writer) append(p []byte) {
 			w.push()
 			w.checkBuffer()
 		}
-		copy(w.buffer[w.size:], p)
+		copy(w.buffer[w.size:], p[length-retain:])
 		w.size += retain
 	}
 }
