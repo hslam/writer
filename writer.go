@@ -212,29 +212,14 @@ func (w *Writer) flush(p []byte) (err error) {
 	if w.cached() {
 		c, l = w.cache()
 	}
-	length := len(p)
 	if l > 0 {
-		size := l + length
-		pool := buffer.AssignPool(size)
-		buf := pool.GetBuffer(size)
-		var pos int
-		if len(c) > 0 {
-			for _, b := range c {
-				s := copy(buf[pos:], b)
-				pos += s
-				w.pool.PutBuffer(b)
-			}
+		for _, b := range c {
+			_, err = w.writer.Write(b)
+			w.pool.PutBuffer(b)
 		}
-		if length > 0 {
-			s := copy(buf[pos:], p)
-			pos += s
-		}
-
-		if pos > 0 {
-			_, err = w.writer.Write(buf[:pos])
-		}
-		pool.PutBuffer(buf)
-	} else if length > 0 {
+	}
+	length := len(p)
+	if length > 0 {
 		_, err = w.writer.Write(p)
 	}
 	w.size = 0
