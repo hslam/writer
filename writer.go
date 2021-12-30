@@ -34,6 +34,7 @@ type Flusher interface {
 // Writer implements batch writing for an io.Writer object.
 type Writer struct {
 	lock        sync.Mutex
+	wLock       sync.Mutex
 	cond        sync.Cond
 	sched       scheduler.Scheduler
 	writer      io.Writer
@@ -123,8 +124,15 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 	}
 	w.lock.Lock()
 	if direct {
-		err = w.flush(p)
+		var c [][]byte
+		var l int
+		if w.cached() {
+			c, l = w.cache()
+		}
+		w.wLock.Lock()
 		w.lock.Unlock()
+		w.flush(p, c, l)
+		w.wLock.Unlock()
 	} else {
 		w.append(p)
 		w.lock.Unlock()
@@ -183,8 +191,15 @@ func (w *Writer) checkBuffer() {
 // Flush writes any buffered data to the underlying io.Writer.
 func (w *Writer) Flush() error {
 	w.lock.Lock()
-	err := w.flush(nil)
+	var c [][]byte
+	var l int
+	if w.cached() {
+		c, l = w.cache()
+	}
+	w.wLock.Lock()
 	w.lock.Unlock()
+	err := w.flush(nil, c, l)
+	w.wLock.Unlock()
 	return err
 }
 
@@ -203,15 +218,11 @@ func (w *Writer) cache() (c [][]byte, length int) {
 	length = w.length
 	w.buffers = nil
 	w.length = 0
+	w.size = 0
 	return
 }
 
-func (w *Writer) flush(p []byte) (err error) {
-	var c [][]byte
-	var l int
-	if w.cached() {
-		c, l = w.cache()
-	}
+func (w *Writer) flush(p []byte, c [][]byte, l int) (err error) {
 	if l > 0 {
 		for _, b := range c {
 			_, err = w.writer.Write(b)
@@ -222,7 +233,6 @@ func (w *Writer) flush(p []byte) (err error) {
 	if length > 0 {
 		_, err = w.writer.Write(p)
 	}
-	w.size = 0
 	return
 }
 
@@ -230,7 +240,18 @@ func (w *Writer) run() {
 	for {
 		w.delay()
 		w.lock.Lock()
-		w.flush(nil)
+		var c [][]byte
+		var l int
+		if w.cached() {
+			c, l = w.cache()
+		}
+		if l > 0 {
+			w.wLock.Lock()
+			w.lock.Unlock()
+			w.flush(nil, c, l)
+			w.wLock.Unlock()
+			continue
+		}
 		w.cond.Wait()
 		if atomic.LoadInt32(&w.closed) > 0 {
 			w.lock.Unlock()
