@@ -43,7 +43,7 @@ func testWriter(contentSize, msgSize, mms int, t *testing.T) {
 		}
 		close(done)
 	}()
-	writer := NewWriter(w, nil, mms, false)
+	writer := NewWriter(w, mms)
 	sent := 0
 	for contentSize-sent > 0 {
 		if contentSize-sent > msgSize {
@@ -79,7 +79,7 @@ func TestNoConcurrency(t *testing.T) {
 		}
 		close(done)
 	}()
-	writer := NewWriter(w, nil, 0, false)
+	writer := NewWriter(w, 0)
 	msg := make([]byte, 512)
 	wg := sync.WaitGroup{}
 	for i := 0; i < 64; i++ {
@@ -111,9 +111,6 @@ func TestConcurrency(t *testing.T) {
 func testConcurrency(batch, mss int, t *testing.T) {
 	r, w := io.Pipe()
 	count := int64(0)
-	concurrency := func() int {
-		return int(atomic.LoadInt64(&count))
-	}
 	size := 0
 	done := make(chan struct{})
 	go func() {
@@ -127,7 +124,7 @@ func testConcurrency(batch, mss int, t *testing.T) {
 		}
 		close(done)
 	}()
-	writer := NewWriter(w, concurrency, mss, false)
+	writer := NewWriter(w, mss)
 	num := 512
 	msg := make([]byte, 512)
 	wg := sync.WaitGroup{}
@@ -159,9 +156,6 @@ func testConcurrency(batch, mss int, t *testing.T) {
 func TestRun(t *testing.T) {
 	r, w := io.Pipe()
 	count := int64(0)
-	concurrency := func() int {
-		return int(atomic.LoadInt64(&count))
-	}
 	size := 0
 	done := make(chan struct{})
 	go func() {
@@ -175,7 +169,7 @@ func TestRun(t *testing.T) {
 		}
 		close(done)
 	}()
-	writer := NewWriter(w, concurrency, 0, false)
+	writer := NewWriter(w, 0)
 	msg := make([]byte, 512)
 	wg := sync.WaitGroup{}
 	for i := 0; i < 1; i++ {
@@ -202,9 +196,6 @@ func TestRun(t *testing.T) {
 func TestShared(t *testing.T) {
 	r, w := io.Pipe()
 	count := int64(0)
-	concurrency := func() int {
-		return int(atomic.LoadInt64(&count))
-	}
 	size := 0
 	done := make(chan struct{})
 	go func() {
@@ -218,7 +209,7 @@ func TestShared(t *testing.T) {
 		}
 		close(done)
 	}()
-	writer := NewWriter(w, concurrency, 65536, true)
+	writer := NewWriter(w, 65536)
 	msg := make([]byte, 512)
 	wg := sync.WaitGroup{}
 	for i := 0; i < 64; i++ {
@@ -253,9 +244,6 @@ func TestMMS(t *testing.T) {
 func testSize(mms int, t *testing.T) {
 	r, w := io.Pipe()
 	count := int64(0)
-	concurrency := func() int {
-		return int(atomic.LoadInt64(&count))
-	}
 	size := 0
 	done := make(chan struct{})
 	go func() {
@@ -269,7 +257,7 @@ func testSize(mms int, t *testing.T) {
 		}
 		close(done)
 	}()
-	writer := NewWriter(w, concurrency, mms, true)
+	writer := NewWriter(w, mms)
 	msg := make([]byte, 512)
 	wg := sync.WaitGroup{}
 	for i := 0; i < 64; i++ {
@@ -291,17 +279,4 @@ func testSize(mms int, t *testing.T) {
 	if size != 512*100*64 {
 		t.Error(size)
 	}
-}
-
-func TestDelay(t *testing.T) {
-	_, w := io.Pipe()
-	count := int64(65536)
-	concurrency := func() int {
-		return int(atomic.LoadInt64(&count))
-	}
-	writer := NewWriter(w, concurrency, maximumSegmentSize, true)
-	writer.delay()
-	writer.Close()
-	w.Close()
-
 }
