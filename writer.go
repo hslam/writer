@@ -8,8 +8,10 @@ import (
 	"errors"
 	"github.com/hslam/buffer"
 	"io"
+	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 )
 
 const (
@@ -26,11 +28,76 @@ type Flusher interface {
 	Flush() (err error)
 }
 
+// BufWriter is the interface that wraps the Writev method.
+type BufWriter interface {
+	Writev(p [][]byte) (n int, err error)
+	Write(p []byte) (n int, err error)
+}
+
+type bufWriter struct {
+	writer io.Writer
+}
+
+func (bw *bufWriter) Writev(c [][]byte) (n int, err error) {
+	for _, b := range c {
+		var written int
+		written, err = bw.writer.Write(b)
+		n += written
+	}
+	return
+}
+
+func (bw *bufWriter) Write(p []byte) (n int, err error) {
+	return bw.writer.Write(p)
+}
+
+// NewFdWriter returns a BufWriter.
+func NewFdWriter(fd int) BufWriter {
+	return &fdWriter{
+		fd: fd,
+	}
+}
+
+type fdWriter struct {
+	fd int
+}
+
+func (bw *fdWriter) Writev(c [][]byte) (n int, err error) {
+	return Writev(bw.fd, c)
+}
+
+func (bw *fdWriter) Write(p []byte) (n int, err error) {
+	return Writev(bw.fd, [][]byte{p})
+}
+
+// ErrSyscallConn will be returned when the net.Conn do not implement the syscall.Conn interface.
+var ErrSyscallConn = errors.New("The net.Conn do not implement the syscall.Conn interface")
+
+func netFd(conn net.Conn) (int, error) {
+	syscallConn, ok := conn.(syscall.Conn)
+	if !ok {
+		return 0, ErrSyscallConn
+	}
+	return fd(syscallConn)
+}
+
+func fd(c syscall.Conn) (int, error) {
+	var nfd int
+	raw, err := c.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	raw.Control(func(fd uintptr) {
+		nfd = int(fd)
+	})
+	return nfd, nil
+}
+
 // Writer implements buffering for an io.Writer object.
 type Writer struct {
 	lock    sync.Mutex
 	wLock   sync.Mutex
-	writer  io.Writer
+	bw      BufWriter
 	mss     int
 	pool    *buffer.Pool
 	buffer  []byte
@@ -47,9 +114,24 @@ func NewWriter(writer io.Writer, size int) *Writer {
 		size = maximumSegmentSize
 	}
 	w := &Writer{
-		writer: writer,
-		mss:    size,
-		pool:   buffer.AssignPool(size),
+		mss:  size,
+		pool: buffer.AssignPool(size),
+	}
+	if bw, ok := writer.(BufWriter); ok {
+		w.bw = bw
+	} else if conn, ok := writer.(net.Conn); ok {
+		fd, err := netFd(conn)
+		if err == nil {
+			w.bw = NewFdWriter(fd)
+		} else {
+			w.bw = &bufWriter{
+				writer: writer,
+			}
+		}
+	} else {
+		w.bw = &bufWriter{
+			writer: writer,
+		}
 	}
 	return w
 }
@@ -138,9 +220,15 @@ func (w *Writer) cache() (c [][]byte) {
 }
 
 func (w *Writer) flush(c [][]byte) (err error) {
-	for _, b := range c {
-		_, err = w.writer.Write(b)
+	if len(c) == 1 {
+		b := c[0]
+		_, err = w.bw.Write(b)
 		w.pool.PutBuffer(b)
+	} else if len(c) > 1 {
+		_, err = w.bw.Writev(c)
+		for _, b := range c {
+			w.pool.PutBuffer(b)
+		}
 	}
 	return
 }
