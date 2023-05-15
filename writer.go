@@ -6,11 +6,10 @@ package writer
 
 import (
 	"errors"
+	"github.com/hslam/atomic"
 	"github.com/hslam/buffer"
 	"io"
-	"net"
 	"sync"
-	"sync/atomic"
 	"syscall"
 )
 
@@ -73,39 +72,38 @@ func (bw *fdWriter) Write(p []byte) (n int, err error) {
 // ErrSyscallConn will be returned when the net.Conn do not implement the syscall.Conn interface.
 var ErrSyscallConn = errors.New("The net.Conn do not implement the syscall.Conn interface")
 
-func netFd(conn net.Conn) (int, error) {
-	syscallConn, ok := conn.(syscall.Conn)
+func syscallFd(w io.Writer) (int, error) {
+	c, ok := w.(syscall.Conn)
 	if !ok {
 		return 0, ErrSyscallConn
 	}
-	return fd(syscallConn)
+	return fileDescriptor(c)
 }
 
-func fd(c syscall.Conn) (int, error) {
-	var nfd int
+func fileDescriptor(c syscall.Conn) (int, error) {
+	var descriptor int
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return 0, err
 	}
 	raw.Control(func(fd uintptr) {
-		nfd = int(fd)
+		descriptor = int(fd)
 	})
-	return nfd, nil
+	return descriptor, nil
 }
 
 // Writer implements buffering for an io.Writer object.
 type Writer struct {
 	lock    sync.Mutex
-	wLock   sync.Mutex
+	writing *atomic.Bool
 	bw      BufWriter
 	mss     int
 	pool    *buffer.Pool
 	buffer  []byte
 	size    int
 	buffers [][]byte
-	writing bool
-	closed  int32
-	done    int32
+	running bool
+	closed  bool
 }
 
 // NewWriter returns a new buffered writer whose buffer has at least the specified size.
@@ -114,23 +112,20 @@ func NewWriter(writer io.Writer, size int) *Writer {
 		size = maximumSegmentSize
 	}
 	w := &Writer{
-		mss:  size,
-		pool: buffer.AssignPool(size),
+		mss:     size,
+		pool:    buffer.AssignPool(size),
+		writing: atomic.NewBool(false),
 	}
 	if bw, ok := writer.(BufWriter); ok {
 		w.bw = bw
-	} else if conn, ok := writer.(net.Conn); ok {
-		fd, err := netFd(conn)
+	} else {
+		fd, err := syscallFd(writer)
 		if err == nil {
 			w.bw = NewFdWriter(fd)
 		} else {
 			w.bw = &bufWriter{
 				writer: writer,
 			}
-		}
-	} else {
-		w.bw = &bufWriter{
-			writer: writer,
 		}
 	}
 	return w
@@ -139,14 +134,15 @@ func NewWriter(writer io.Writer, size int) *Writer {
 // Write writes the contents of p into the buffer or the underlying io.Writer.
 // It returns the number of bytes written.
 func (w *Writer) Write(p []byte) (n int, err error) {
-	if atomic.LoadInt32(&w.closed) > 0 {
+	w.lock.Lock()
+	if w.closed {
+		w.lock.Unlock()
 		return 0, ErrWriterClosed
 	}
-	w.lock.Lock()
-	if !w.writing {
-		w.writing = true
+	if !w.running {
+		w.running = true
 		w.append(p)
-		go w.write()
+		go w.run()
 	} else {
 		w.append(p)
 	}
@@ -194,14 +190,15 @@ func (w *Writer) checkBuffer() {
 // Flush writes any buffered data to the underlying io.Writer.
 func (w *Writer) Flush() error {
 	w.lock.Lock()
+	for !w.writing.CompareAndSwap(false, true) {
+	}
 	var c [][]byte
 	if w.buffered() {
 		c = w.cache()
 	}
-	w.wLock.Lock()
 	w.lock.Unlock()
 	err := w.flush(c)
-	w.wLock.Unlock()
+	w.writing.Store(false)
 	return err
 }
 
@@ -233,29 +230,33 @@ func (w *Writer) flush(c [][]byte) (err error) {
 	return
 }
 
-func (w *Writer) write() {
+func (w *Writer) run() {
 	for {
 		w.lock.Lock()
-		var c [][]byte
-		if w.buffered() {
-			c = w.cache()
-		}
-		if len(c) == 0 {
-			w.writing = false
+		if !w.buffered() {
+			w.running = false
 			w.lock.Unlock()
 			return
 		}
-		w.wLock.Lock()
-		w.lock.Unlock()
-		w.flush(c)
-		w.wLock.Unlock()
+		if w.writing.CompareAndSwap(false, true) {
+			c := w.cache()
+			w.lock.Unlock()
+			w.flush(c)
+			w.writing.Store(false)
+		} else {
+			w.lock.Unlock()
+		}
 	}
 }
 
 // Close closes the writer, but do not close the underlying io.Writer
 func (w *Writer) Close() (err error) {
-	if !atomic.CompareAndSwapInt32(&w.closed, 0, 1) {
+	w.lock.Lock()
+	if w.closed {
+		w.lock.Unlock()
 		return nil
 	}
+	w.closed = true
+	w.lock.Unlock()
 	return w.Flush()
 }

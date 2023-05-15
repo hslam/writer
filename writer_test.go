@@ -142,6 +142,7 @@ func testConcurrency(batch, msgSize, num, mss int, t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < num; i++ {
 				writer.Write(msg)
+				writer.Flush()
 				time.Sleep(time.Microsecond)
 			}
 		}()
@@ -369,7 +370,7 @@ func testFdConcurrency(batch, msgSize, num, mss int, t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	fd, err := netFd(conn)
+	fd, err := syscallFd(conn)
 	if err != nil {
 		t.Error(err)
 	}
@@ -658,7 +659,7 @@ func (c *testConn) SyscallConn() (syscall.RawConn, error) {
 }
 
 func TestFd(t *testing.T) {
-	_, err := fd(&testConn{})
+	_, err := fileDescriptor(&testConn{})
 	if err == nil {
 		t.Error("should be err")
 	}
