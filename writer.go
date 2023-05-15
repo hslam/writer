@@ -103,7 +103,7 @@ type Writer struct {
 	size    int
 	buffers [][]byte
 	running bool
-	closed  bool
+	closed  *atomic.Bool
 }
 
 // NewWriter returns a new buffered writer whose buffer has at least the specified size.
@@ -115,6 +115,7 @@ func NewWriter(writer io.Writer, size int) *Writer {
 		mss:     size,
 		pool:    buffer.AssignPool(size),
 		writing: atomic.NewBool(false),
+		closed:  atomic.NewBool(false),
 	}
 	if bw, ok := writer.(BufWriter); ok {
 		w.bw = bw
@@ -134,11 +135,10 @@ func NewWriter(writer io.Writer, size int) *Writer {
 // Write writes the contents of p into the buffer or the underlying io.Writer.
 // It returns the number of bytes written.
 func (w *Writer) Write(p []byte) (n int, err error) {
-	w.lock.Lock()
-	if w.closed {
-		w.lock.Unlock()
+	if w.closed.Load() {
 		return 0, ErrWriterClosed
 	}
+	w.lock.Lock()
 	if !w.running {
 		w.running = true
 		w.append(p)
@@ -251,12 +251,8 @@ func (w *Writer) run() {
 
 // Close closes the writer, but do not close the underlying io.Writer
 func (w *Writer) Close() (err error) {
-	w.lock.Lock()
-	if w.closed {
-		w.lock.Unlock()
+	if !w.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	w.closed = true
-	w.lock.Unlock()
 	return w.Flush()
 }
