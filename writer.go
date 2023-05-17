@@ -191,6 +191,8 @@ func (w *Writer) checkBuffer() {
 func (w *Writer) Flush() error {
 	w.lock.Lock()
 	for !w.writing.CompareAndSwap(false, true) {
+		w.lock.Unlock()
+		w.lock.Lock()
 	}
 	var c [][]byte
 	if w.buffered() {
